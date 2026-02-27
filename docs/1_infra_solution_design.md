@@ -9,7 +9,63 @@ Design notes and decisions as I go.
 
 The spec asks for a single deployment, however we should structure things in advance of a multi-region/multi-instance ask. This can be accommodated by making the core workload components - App Service Plans, Function Apps, and supporting infra - a terraform module. This makes additional instance deployments far easier, and is a low-effort design decision to make now.
 
-We will refer to each instance of the workload as a "stamp" - so we will have "workload-stamp-1" for example. Each stamp will have its own ASP, Function App, Storage Account, Key Vault, App Insights etc. The shared infrastructure (ACR, APIM, Log Analytics Workspace) will be outside the stamp module and shared between them. I am deliberately *NOT* going to make the ASP a shared component between stamps. This would make network isolation much harder and make multi-region impossible - so this is a design choice I am making. 
+We will refer to each instance of the workload as a "stamp" - so we will have "workload-stamp-1" for example. Each stamp will have its own ASP, Function App, Storage Account, App Insights, and **Key Vault**. The stamp is designed as a self-contained regional unit — if a region fails, only that stamp is affected; a shared KV would propagate the failure to all stamps. The shared infrastructure (APIM, ACR, VNet, observability) will be outside the stamp module. I am deliberately *NOT* going to make the ASP a shared component between stamps. This would make network isolation much harder and make multi-region impossible — so this is a design choice I am making.
+
+### Resource Group Model
+
+Four resource groups per environment, each reflecting a different lifecycle and sharing boundary:
+
+| Resource Group | Naming | What lives here |
+|----------------|--------|----------------|
+| `rg-core-deploy` | No env | **Manually created** before first `terraform init`. Holds the state storage account for all Terraform roots (`phase1/core`, `phase1/env`, `phase3`). Not managed by Terraform. |
+| `rg-core` | No env, no workload prefix | **Cross-environment core platform**: ACR, Log Analytics, VNet, NSGs, NAT GW, Private DNS zones, Jump box. Deployed **once**, shared across all environments — resources here carry no env suffix. |
+| `rg-wkld-shared-<env>` | Per-env | **Per-environment shared**: APIM only (Key Vault has moved into each stamp). Shared front door, differs by environment. |
+| `rg-wkld-stamp-<N>-<env>` | Per-stamp, per-env | **Per-stamp compute**: ASP, Function App(s), Storage Account, App Insights, Key Vault, stamp-scoped Private Endpoints. One RG per stamp × per environment. |
+
+The `phase1/env` workspace (`dev`, `test`, `prod`) owns its own complete set of per-environment resources. Core resources in `rg-core` are shared and workspace-independent.
+
+### Environment Strategy — Terraform Workspaces
+
+**Terraform workspaces apply to `phase1/env/` and `phase3/` only.** The `phase1/core/` root is deployed once without workspace selection — it is environment-agnostic. Core outputs (subnet IDs, ACR details, LAW ID, DNS zone IDs) are consumed by `phase1/env/` and `phase3/` via remote state.
+
+```
+# phase1/env — workspace-driven
+terraform workspace select dev   → deploys dev APIM + stamp layer
+terraform workspace select test  → deploys test APIM + stamp layer
+terraform workspace select prod  → deploys prod APIM + stamp layer
+```
+
+Environment-specific stamp definitions live in per-workspace `.tfvars` files (`dev.tfvars`, `test.tfvars`, `prod.tfvars`). Shared configuration (subscription ID, location, APIM publisher) remains in `terraform.tfvars`.
+
+The built-in `default` workspace maps to `dev` as a safety net — an unconfigured workspace never silently targets production.
+
+`phase1/core/` uses a single `terraform.tfvars` with all environments' stamp subnet CIDRs declared together. This is what allows a single shared VNet to host subnets for all environments simultaneously.
+
+### Multi-Stamp Support
+
+Stamp definitions are split across two root modules:
+
+**`phase1/core/terraform.tfvars`** — declares all environments' subnet CIDRs in a single flat list. Adding a stamp requires an entry here so the VNet module creates the subnet pair:
+
+```hcl
+stamp_subnets = [
+  { environment = "dev",  stamp_name = "1", subnet_pe_cidr = "10.100.0.0/24", subnet_asp_cidr = "10.100.1.0/24" },
+  { environment = "dev",  stamp_name = "2", subnet_pe_cidr = "10.100.2.0/24", subnet_asp_cidr = "10.100.3.0/24" },
+  { environment = "test", stamp_name = "1", subnet_pe_cidr = "10.100.4.0/24", subnet_asp_cidr = "10.100.5.0/24" },
+  { environment = "prod", stamp_name = "1", subnet_pe_cidr = "10.100.6.0/24", subnet_asp_cidr = "10.100.7.0/24" },
+]
+```
+
+**`phase1/env/dev.tfvars`** — declares the workload stamps for that env (image, location). These reference the subnet pairs created above by name convention (`snet-stamp-dev-<N>-pe/asp`):
+
+```hcl
+stamps = [
+  { stamp_name = "1", location = "uksouth", image_name = "wkld-api", image_tag = "latest" },
+  { stamp_name = "2", location = "uksouth", image_name = "wkld-api", image_tag = "latest" },
+]
+```
+
+NSG rules for stamp subnets and cross-cutting rules (on APIM, shared-PE, runner, jumpbox NSGs) are generated dynamically using `for_each` inside the `modules/workload-stamp-subnet` module, so adding a stamp automatically produces the correct firewall rules.
 
 ### Function App / App Service Plan
 
@@ -38,17 +94,23 @@ Networking is going to be a key feature of this design. The requirement for Priv
 
 ### VNet Design
 
-The solution will require a single VNet for the present time. A hub-spoke architecture would enable better multi-region, however this is not something that will be pursued for now.
+A single shared VNet (`vnet-core`, `10.100.0.0/16`) hosts all environments. This avoids per-environment VNet management complexity and enables a simple, auditable egress model. Subnets for different environments co-exist in the same VNet, distinguished by environment in the subnet name (`snet-stamp-<env>-<N>-pe`).
 
-The workload can be anticipated to need at least four subnets to begin with:
+The `/16` (65,536 IPs) provides ample room for many stamps across all environments. Fixed shared subnets occupy the upper range (`10.100.128.0+`); stamp subnets occupy the lower range sequentially.
 
-- **Stamp PE Subnet** — for Private Endpoints, internal load balancers, anything that doesn't need a specific delegation.
-- **Stamp ASP Subnet** — delegated to `Microsoft.Web/serverFarms` for the Function App's VNet integration.
-- **Shared APIM Subnet** — delegated to `Microsoft.ApiManagement/service` for the internal-mode APIM deployment.
-- **Shared PE Subnet** — for shared resources like ACR, Key Vault, Log Analytics. No delegation, just Private Endpoints.
-- **Shared GitHub Runner Subnet** — for the GitHub VNET-injected runner, which needs to be able to access all private resources and will be delegated to the github runner service.
+Two categories of subnets:
 
-VNet module takes an array of subnet objects — adding subnets later is just another list element. Each object: name, CIDR, delegation, service endpoints. No copy-paste.
+**Fixed shared subnets** (one per VNet, created by `modules/vnet`):
+- **`snet-apim`** — delegated to `Microsoft.ApiManagement/service` for the internal-mode APIM.
+- **`snet-shared-pe`** — Private Endpoints for shared resources (ACR). No delegation.
+- **`snet-runner`** — delegated to `GitHub.Network/networkSettings` for the VNet-injected runner. NAT Gateway attached.
+- **`snet-jumpbox`** — Windows 11 jump box VM. No delegation.
+
+**Per-stamp subnets** (one pair per stamp per env, created by `modules/workload-stamp-subnet`):
+- **`snet-stamp-<env>-<N>-pe`** — Private Endpoints for stamp resources (Function App, Storage, Key Vault). PE network policies enabled.
+- **`snet-stamp-<env>-<N>-asp`** — delegated to `Microsoft.Web/serverFarms` for Function App VNet integration.
+
+VNet module takes an array of subnet objects. Stamp subnets are created by a separate `workload-stamp-subnet` module which also manages their NSGs and all NSG rules.
 
 ### Private DNS
 
@@ -101,17 +163,22 @@ Can't do everything in one `terraform apply` — networking chicken-and-egg.
 
 ### Phase 1 — Bootstrap (GitHub-hosted runner)
 
-Foundational infra, no private network access needed:
+Split into two independent root modules within `phase1/`:
 
-- Resource Groups
+**`phase1/core/`** — foundational infra (rarely changes):
+- Resource Groups (core only)
 - VNet + subnets + NSGs
 - Private DNS Zones
 - ACR (with Private Endpoint)
-- Key Vault (with Private Endpoint)
-- Storage Account (with network rules — but no containers yet)
+- Log Analytics
+- NAT Gateway + Jump Box
+- CI/CD Identity (SP + OIDC federation)
+- TLS cert generation (CA + client cert)
+
+**`phase1/env/`** — workload layer (changes more often, reads `core/` via remote state):
+- Resource Groups (shared + stamp)
 - APIM (internal mode, in its own subnet)
-- Log Analytics / App Insights
-- App Service Plan / Function App. 
+- Module call: `modules/workload-stamp` per stamp — ASP, Function App(s), Storage Account, **Key Vault**, App Insights, all PEs
 
 ### Phase 2 — Manual Github Setup
 
@@ -119,38 +186,58 @@ I will get GitHub setup to inject the managed runner into the subnet.
 
 ### Phase 3 — Private data-plane ops (self-hosted runner)
 
-- Build and push the container image to ACR.
-- Create Storage Account blob containers, file shares, etc.
-- Write secrets/certificates into Key Vault.
-- Wire up diagnostic settings, alert rules, mTLS config.
+Phase 3 is workspace-driven (like `phase1/env/`) and reads remote state from both `phase1/core/` and `phase1/env/`:
+
+| File | Purpose |
+|------|---------|
+| `main.tf` | Provider config (`azurerm` + `azuread`), backend, remote state for both `core` and `env`. Environment derived from workspace. |
+| `secrets.tf` | Writes the CA certificate and client certificate (generated by `phase1/core/certificates.tf`) into each stamp's Key Vault. Requires data-plane access — only possible from inside the VNet. |
+| `apim-config.tf` | Creates APIM backends (one per stamp's Function App PE), API definition, operations, and the mTLS client-certificate validation policy using the CA cert from Key Vault. |
+| `alerts.tf` | Monitor metric alerts (5xx rate, availability test failures), App Insights standard web tests against the Function App health endpoint via APIM, and the shared Action Group (email/webhook). |
+| `variables.tf` | Shared variables: subscription, tenant, location, state account name, per-env tuning (alert thresholds, test probe frequency). |
+| `outputs.tf` | APIM gateway URL, alert rule IDs, web test IDs. |
 
 #### Why not one apply?
 
-Terraform tries to `ListKeys` / list blob containers on Storage Accounts during `plan`. Network rules locked down + runner outside VNet = 403 - Terraform stops planning. So: Phase 1 sets up networking + runner, Phase 3 only runs from inside the VNet where those calls work. Additionally, the certificate operations will fail if the Key Vault is locked down behind a Private Endpoint and the runner is outside the VNet, so those also need to be in Phase 3.
+Terraform tries to `ListKeys` / list blob containers on Storage Accounts during `plan`. Network rules locked down + runner outside VNet = 403 — Terraform stops planning. So: Phase 1 sets up networking + runner, Phase 3 only runs from inside the VNet where those calls work. Certificate data-plane writes to Key Vault also require VNet access.
 
 
 ## Repo Layout
 
-This phased approach informs the directory structure:
+The phased + workspace approach informs the directory structure:
 
 ```
 terraform/
   modules/
-    priv-dns/      # Private DNS creation
-    vnet/          # VNet + subnets + NSGs + Private DNS VNET Linking
-    function-app/  # App Service Plan + Function App + supporting infra
-    ...            # other reusable modules
-  phase1/          # bootstrap infra (runs on hosted runner)
-    main.tf
+    private-dns/           # 7 Private DNS zones + named ID outputs
+    vnet/                  # VNet + fixed subnets + NSGs + DNS links + flow logs
+    workload-stamp/        # ASP + Function App + Storage + Key Vault + App Insights + PEs + role assignments
+    workload-stamp-subnet/ # Per-stamp subnet pair (PE + ASP) + NSGs + all NSG rules (stamp + cross-cutting)
+  phase1/
+    core/          # Foundational infra — deployed ONCE, not workspace-driven
+                   # Shared across all environments; runs on GitHub-hosted runner
+      terraform.tfvars    # All values: subscription, location, jump box, ALL stamp_subnets across all envs
+    env/           # Workload layer (APIM, stamps) — workspace-driven (dev/test/prod)
+                   # Reads core/ outputs via remote_state; runs on GitHub-hosted runner
+      terraform.tfvars    # Shared values (subscription, location, APIM publisher)
+      dev.tfvars          # dev stamps: stamp_name, image, location
+      test.tfvars         # test stamps
+      prod.tfvars         # prod stamps
+  phase3/          # Private data-plane ops — workspace-driven (dev/test/prod)
+                   # Runs on self-hosted VNet-injected runner
+    main.tf             # Provider config + remote state (reads core + env outputs)
+    secrets.tf          # CA + client cert writes to per-stamp Key Vaults
+    apim-config.tf      # APIM backends, API, operations, mTLS policy
+    alerts.tf           # Monitor alerts, web tests, action groups
     variables.tf
-    ...
-  phase3/          # private deploys (runs on self-hosted VNet runner)
-    main.tf
-    variables.tf
-    ...
+    outputs.tf
+    terraform.tfvars    # Shared values (subscription, location, state account)
+    dev.tfvars
+    test.tfvars
+    prod.tfvars
 ```
 
-Each phase = own root module, own state file. Shared modules, planned/applied independently. Phase 2 reads Phase 1 outputs via `terraform_remote_state` (or pipe through CI/CD vars — either works).
+**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3.tfstate` (per workspace). `phase1/env/` and `phase3/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/` additionally reads `phase1/env/` outputs.
 
 
 ## CI/CD Pipeline

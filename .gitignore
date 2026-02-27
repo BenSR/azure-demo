@@ -25,6 +25,9 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# Backend / provider credentials — contains subscription IDs and OIDC client IDs
+backend_conf/
+
 # IDE / Editor
 .vscode/*
 !.vscode/settings.json

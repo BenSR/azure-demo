@@ -1,6 +1,7 @@
 # Developer Log
 
 ---
+## INFRA DESIGN
 
 ### 1 — Requirements Refinement
 **Tool:** GitHub Copilot Chat (Claude 4.6 Opus)
@@ -87,3 +88,35 @@ Modules should default to, where it is possible, enabling managed identity, disa
 **Goal** To define in documentation a complete list of all expected Azure resources, SKU, purpose and any other relevant details. This will be used as a reference during implementation to ensure that all required resources are created and that the design is being followed. The existence of this file will allow AI agents to use it without wasting context window on trying to infer what resources are needed.
 
 **Prompt:** Please create a document called `2_azure_infra_bom.md` which captures a complete bill of materials for the Azure infrastructure. This should include every resource that is expected to be created, along with its SKU, purpose, and any other relevant details
+
+**Comments** Worked well, this will support cost estimation. 
+
+## INFRA DESIGN
+
+**Tool:** Claude Code
+
+**Goal:** Start to build out the desired infra
+
+**Prompt:** Please now create all the terraform to support the deployment of the app as described in the docs. Do make sure to create an SP as well with federated identity to github. All non-secret config for the deployment (excluding the provider auth stuff) should be in a tfvars file
+
+**Comments:** It generated the backend conf directory only. Not exactly helpful.
+
+**Prompt:** Please now create all the terraform to support the deployment of the app as described in the doc suite. Do make sure to create an SP as well with federated identity to github. All non-secret config for the deployment (excluding the provider auth stuff) should be in a tfvars file. Start by creating the Module Library
+
+**Comments:** Module library created. Looks good! Exactly what I wanted. 
+
+**Prompt:** Please now create all the Phase 1 terraform to support the deployment of the app as described in the docs. Do make sure to create an SP as well with federated identity to github. All non-secret config for the deployment (excluding the provider auth stuff) should be in a tfvars file. Please regard the existing modules library
+
+**Comments:** It's worked, and the implementation is fine, however reading it, I need to reconsider my original design - environment specific resources like ACR and Log Analytics are not ideal.
+
+**Prompt:** Okay - I think we need to refactor some of the docs and infra. I am not happy with some of the resources which would likely be shared between environments, like the acr or log analytics, being named "dev"
+I think the resource group structure ought to be
+
+- deplyment RG (contains the state file)
+- core RG (contains acr, log analytics, vnet)
+- workload shared dev (infra the workload shares across instances in dev) - APIM
+- workload stamp specific infra (asp/function app) etc - this would be a rg per stamp-1, stamp-2 etc
+
+**Comments:** Excellent - next step is to now re-factor the dev specific auth so it is deployed via a workspace. This gives us a dev/test/prod facility. 
+
+**Prompt:** Please read the docs and the terraform directory. I want to facilitate the deployment of dev/test/prod instances via terraform workspaces. Can you refactor the codebase to facilitate this? Each environment will be able to have one or more stamps. 
