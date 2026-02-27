@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/workspaces/azure-demo/terraform/phase1/outputs.tf:*)"
+    ]
+  }
+}
