@@ -70,6 +70,10 @@ resource "azurerm_linux_function_app" "this" {
   public_network_access_enabled = false
   https_only                    = true
 
+  # Enable publishing credentials so the Kudu container deployment webhook URL
+  # can be retrieved and stored in Key Vault for CI/CD use.
+  webdeploy_publish_basic_authentication_enabled = true
+
   # Outbound traffic from the Function App leaves via this VNet-integrated subnet.
   virtual_network_subnet_id = var.subnet_id
 
@@ -106,6 +110,34 @@ resource "azurerm_linux_function_app" "this" {
     },
     each.value.app_settings
   )
+
+  # ── EasyAuth v2 ────────────────────────────────────────────────────────────
+  # Validates Entra ID JWTs issued by APIM's Managed Identity before requests
+  # reach function code (Section 12.4, app-planning.md).
+  #
+  # /api/health is excluded — App Insights availability tests and APIM health
+  # probes do not carry tokens.  The endpoint returns no sensitive data and is
+  # only reachable from inside the VNet (NSGs restrict the PE subnet).
+  auth_settings_v2 {
+    auth_enabled           = true
+    require_authentication = true
+    unauthenticated_action = "Return401"
+    excluded_paths         = ["/api/health"]
+
+    active_directory_v2 {
+      client_id            = var.entra_app_client_id
+      tenant_auth_endpoint = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/v2.0"
+
+      # Token audience must match the identifier_uri of the Entra app registration.
+      allowed_audiences = [
+        "api://func-${var.workload_name}-${var.stamp_number}-api-${var.environment}"
+      ]
+    }
+
+    login {
+      token_store_enabled = false
+    }
+  }
 
   tags = var.tags
 }

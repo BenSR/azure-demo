@@ -5,10 +5,7 @@ output "cicd_client_id" {
   description = "Client (application) ID of the CI/CD service principal (auto-detected from the authenticated session)."
 }
 
-output "cicd_object_id" {
-  value       = var.cicd_object_id
-  description = "Object ID of the CI/CD service principal. Used by env/ to assign Key Vault Administrator role."
-}
+
 
 # ─── ACR ─────────────────────────────────────────────────────────────────────
 

@@ -50,13 +50,6 @@ variable "stamp_subnets" {
   }
 }
 
-# ─── CI/CD service principal ───────────────────────────────────────────────────
-
-variable "cicd_object_id" {
-  type        = string
-  description = "Object ID of the pre-created CI/CD service principal. Used by env/ to assign Key Vault Administrator role."
-}
-
 # ─── Jump box ─────────────────────────────────────────────────────────────────
 
 variable "jumpbox_admin_username" {

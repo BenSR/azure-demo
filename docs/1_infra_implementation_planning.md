@@ -109,7 +109,7 @@ module "workload_stamp_subnet" {
 }
 ```
 
-**`phase1/env/`** — workspace-driven (`dev`/`test`/`prod`). Environment derived from workspace name. `stamps` is a list (not a map):
+**`phase1/env/`** — workspace-driven (`dev`/`prod`). Environment derived from workspace name. `stamps` is a list (not a map):
 
 ```hcl
 # phase1/env/main.tf locals
@@ -171,7 +171,6 @@ terraform -chdir=terraform/phase1/core apply
 # ── phase1/env — workspace-driven ─────────────────────────────────────────
 # Create workspaces (one-time):
 terraform -chdir=terraform/phase1/env workspace new dev
-terraform -chdir=terraform/phase1/env workspace new test
 terraform -chdir=terraform/phase1/env workspace new prod
 
 # Deploy dev:
@@ -185,7 +184,7 @@ terraform -chdir=terraform/phase1/env apply \
   -var-file=terraform.tfvars -var-file=prod.tfvars
 ```
 
-State is automatically namespaced per workspace by the azurerm backend (`env:/dev/...`, `env:/test/...`, `env:/prod/...`). The core state key is a single flat `phase1-core.tfstate`.
+State is automatically namespaced per workspace by the azurerm backend (`env:/dev/...`, `env:/prod/...`). The core state key is a single flat `phase1-core.tfstate`.
 
 ---
 
@@ -372,7 +371,7 @@ These resources exist once per deployment and do not benefit from modularisation
 | CI/CD Identity | `identity.tf` | — | `data.azurerm_client_config` to detect the CI/CD SP for downstream role assignments. |
 | Jump Box VM | `jumpbox.tf` | `rg-core` | `vm-jumpbox-core` — Windows 11 + Entra ID auth + `pip-jumpbox-core` for RDP. |
 
-### `phase1/env/` — Workspace-driven (dev / test / prod)
+### `phase1/env/` — Workspace-driven (dev / prod)
 
 *Resource names below use `dev` workspace as an example.*
 
@@ -424,7 +423,7 @@ phase1/core/ (deployed once)
         NSG rules for fixed shared subnets (APIM, shared-pe, runner, jumpbox)
 
 
-phase1/env/ (workspace-driven: dev / test / prod)
+phase1/env/ (workspace-driven: dev / prod)
 │   reads core/ outputs via terraform_remote_state
 │
 ├── azurerm_api_management              (inline — apim.tf)
@@ -434,7 +433,7 @@ phase1/env/ (workspace-driven: dev / test / prod)
         ↑ consumes: core.subnet_ids["snet-stamp-<env>-<N>-asp/pe"]
                     core.acr_id, core.log_analytics_workspace_id
                     core.private_dns_zone_ids (blob/file/table/queue/websites/key_vault)
-                    apim.identity.principal_id, core.cicd_object_id
+                    apim.identity.principal_id, 
         Deploys per stamp: ASP, Function App, Storage, App Insights,
                            Key Vault (per-stamp), all Private Endpoints, role assignments
 ```
@@ -478,10 +477,10 @@ terraform/
       certificates.tf   # tls CA + client cert generation
       jumpbox.tf        # vm-jumpbox-core + NIC + PIP + AAD extension
       identity.tf       # data.azurerm_client_config (CI/CD SP detection)
-      variables.tf      # stamp_subnets, cicd_object_id, jumpbox vars
+      variables.tf      # stamp_subnets, jumpbox vars
       outputs.tf
       terraform.tfvars  # ALL values: subscription, location, jumpbox, all stamp_subnets
-    env/                # Workspace-driven: dev / test / prod
+    env/                # Workspace-driven: dev / prod
       main.tf           # Provider config, backend, remote state (reads core)
       resource-groups.tf  # rg-wkld-shared-<env> + per-stamp RGs
       apim.tf           # apim-wkld-shared-<env>
@@ -490,9 +489,8 @@ terraform/
       outputs.tf
       terraform.tfvars  # Shared values (subscription, location, APIM publisher)
       dev.tfvars        # dev stamps (stamp_name, image_name, image_tag, location)
-      test.tfvars
       prod.tfvars
-  phase3/               # Workspace-driven: dev / test / prod
+  phase3/               # Workspace-driven: dev / prod
     main.tf             # Provider config, backend, remote state (reads core + env)
     secrets.tf          # CA + client cert writes to per-stamp Key Vaults
     apim-config.tf      # APIM backends, API, operations, mTLS policy
@@ -501,7 +499,6 @@ terraform/
     outputs.tf
     terraform.tfvars    # Shared values
     dev.tfvars
-    test.tfvars
     prod.tfvars
 ```
 

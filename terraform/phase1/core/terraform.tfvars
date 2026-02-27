@@ -23,14 +23,6 @@ tenant_id       = "00000000-0000-0000-0000-000000000000"
 
 location = "uksouth"
 
-# ─── CI/CD service principal ───────────────────────────────────────────────────
-# Pre-created SP with Owner access on the subscription and GitHub OIDC
-# federated credentials.  client_id is auto-detected via
-# data.azurerm_client_config; object_id is passed explicitly because env/
-# needs it for Key Vault Administrator role assignment.
-
-cicd_object_id = "00000000-0000-0000-0000-000000000000"
-
 # ─── Jump box ─────────────────────────────────────────────────────────────────
 
 jumpbox_vm_size = "Standard_B2s"
@@ -53,12 +45,6 @@ stamp_subnets = [
     stamp_name      = "2"
     subnet_pe_cidr  = "10.100.2.0/24"
     subnet_asp_cidr = "10.100.3.0/24"
-  },
-  {
-    environment     = "test"
-    stamp_name      = "1"
-    subnet_pe_cidr  = "10.100.4.0/24"
-    subnet_asp_cidr = "10.100.5.0/24"
   },
   {
     environment     = "prod"

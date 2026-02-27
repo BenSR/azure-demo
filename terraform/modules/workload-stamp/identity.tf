@@ -22,14 +22,14 @@ resource "azurerm_role_assignment" "kv_secrets_user" {
 }
 
 # ─── Key Vault — CI/CD SP access ──────────────────────────────────────────────
-# The CI/CD service principal needs Key Vault Administrator on the data plane
-# so that Phase 3 (running on the self-hosted VNet runner) can import
+# The Terraform caller (CI/CD SP) needs Key Vault Administrator on the data
+# plane so that Phase 3 (running on the self-hosted VNet runner) can import
 # certificates and write secrets into this stamp's KV.
 
 resource "azurerm_role_assignment" "kv_admin_cicd" {
   scope                = azurerm_key_vault.this.id
   role_definition_name = "Key Vault Administrator"
-  principal_id         = var.cicd_object_id
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 # ─── Key Vault — APIM access ───────────────────────────────────────────────────

@@ -69,11 +69,6 @@ variable "apim_principal_id" {
   description = "Object ID of the APIM system-assigned managed identity.  Granted Key Vault Certificate User and Secrets User so APIM can retrieve mTLS certs in Phase 3."
 }
 
-variable "cicd_object_id" {
-  type        = string
-  description = "Object ID of the CI/CD service principal.  Granted Key Vault Administrator so Phase 3 can write secrets and certificates."
-}
-
 variable "private_dns_zone_ids" {
   type = object({
     blob_storage_zone_id  = string
@@ -84,6 +79,11 @@ variable "private_dns_zone_ids" {
     key_vault_zone_id     = string
   })
   description = "Named Private DNS Zone IDs for the Private Endpoints created by this module."
+}
+
+variable "entra_app_client_id" {
+  type        = string
+  description = "Application (client) ID of the Entra ID app registration for this stamp's Function App. Used to configure EasyAuth (auth_settings_v2) so the Function App validates Entra tokens issued by APIM's Managed Identity."
 }
 
 variable "tags" {

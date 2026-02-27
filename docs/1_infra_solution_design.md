@@ -22,7 +22,7 @@ Four resource groups per environment, each reflecting a different lifecycle and 
 | `rg-wkld-shared-<env>` | Per-env | **Per-environment shared**: APIM only (Key Vault has moved into each stamp). Shared front door, differs by environment. |
 | `rg-wkld-stamp-<N>-<env>` | Per-stamp, per-env | **Per-stamp compute**: ASP, Function App(s), Storage Account, App Insights, Key Vault, stamp-scoped Private Endpoints. One RG per stamp × per environment. |
 
-The `phase1/env` workspace (`dev`, `test`, `prod`) owns its own complete set of per-environment resources. Core resources in `rg-core` are shared and workspace-independent.
+The `phase1/env` workspace (`dev`, `prod`) owns its own complete set of per-environment resources. Core resources in `rg-core` are shared and workspace-independent.
 
 ### Environment Strategy — Terraform Workspaces
 
@@ -31,11 +31,10 @@ The `phase1/env` workspace (`dev`, `test`, `prod`) owns its own complete set of 
 ```
 # phase1/env — workspace-driven
 terraform workspace select dev   → deploys dev APIM + stamp layer
-terraform workspace select test  → deploys test APIM + stamp layer
 terraform workspace select prod  → deploys prod APIM + stamp layer
 ```
 
-Environment-specific stamp definitions live in per-workspace `.tfvars` files (`dev.tfvars`, `test.tfvars`, `prod.tfvars`). Shared configuration (subscription ID, location, APIM publisher) remains in `terraform.tfvars`.
+Environment-specific stamp definitions live in per-workspace `.tfvars` files (`dev.tfvars`, `prod.tfvars`). Shared configuration (subscription ID, location, APIM publisher) remains in `terraform.tfvars`.
 
 The built-in `default` workspace maps to `dev` as a safety net — an unconfigured workspace never silently targets production.
 
@@ -51,7 +50,6 @@ Stamp definitions are split across two root modules:
 stamp_subnets = [
   { environment = "dev",  stamp_name = "1", subnet_pe_cidr = "10.100.0.0/24", subnet_asp_cidr = "10.100.1.0/24" },
   { environment = "dev",  stamp_name = "2", subnet_pe_cidr = "10.100.2.0/24", subnet_asp_cidr = "10.100.3.0/24" },
-  { environment = "test", stamp_name = "1", subnet_pe_cidr = "10.100.4.0/24", subnet_asp_cidr = "10.100.5.0/24" },
   { environment = "prod", stamp_name = "1", subnet_pe_cidr = "10.100.6.0/24", subnet_asp_cidr = "10.100.7.0/24" },
 ]
 ```
@@ -217,13 +215,12 @@ terraform/
     core/          # Foundational infra — deployed ONCE, not workspace-driven
                    # Shared across all environments; runs on GitHub-hosted runner
       terraform.tfvars    # All values: subscription, location, jump box, ALL stamp_subnets across all envs
-    env/           # Workload layer (APIM, stamps) — workspace-driven (dev/test/prod)
+    env/           # Workload layer (APIM, stamps) — workspace-driven (dev/prod)
                    # Reads core/ outputs via remote_state; runs on GitHub-hosted runner
       terraform.tfvars    # Shared values (subscription, location, APIM publisher)
       dev.tfvars          # dev stamps: stamp_name, image, location
-      test.tfvars         # test stamps
       prod.tfvars         # prod stamps
-  phase3/          # Private data-plane ops — workspace-driven (dev/test/prod)
+  phase3/          # Private data-plane ops — workspace-driven (dev/prod)
                    # Runs on self-hosted VNet-injected runner
     main.tf             # Provider config + remote state (reads core + env outputs)
     secrets.tf          # CA + client cert writes to per-stamp Key Vaults
@@ -233,7 +230,6 @@ terraform/
     outputs.tf
     terraform.tfvars    # Shared values (subscription, location, state account)
     dev.tfvars
-    test.tfvars
     prod.tfvars
 ```
 

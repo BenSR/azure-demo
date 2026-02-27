@@ -2,7 +2,8 @@
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
   "features": {
     "ghcr.io/devcontainers/features/azure-cli:1": {},
-    "ghcr.io/devcontainers/features/terraform:1": {}
+    "ghcr.io/devcontainers/features/terraform:1": {},
+    "ghcr.io/devcontainers/features/git-lfs:1": {}
   },
   "customizations": {
     "vscode": {

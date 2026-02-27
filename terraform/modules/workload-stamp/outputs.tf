@@ -59,3 +59,12 @@ output "key_vault_uri" {
   value       = azurerm_key_vault.this.vault_uri
   description = "Stamp Key Vault URI."
 }
+
+output "function_app_webhook_urls" {
+  value = {
+    for k, v in azurerm_linux_function_app.this : k =>
+    "https://${v.site_credential[0].name}:${v.site_credential[0].password}@${k}.scm.azurewebsites.net/api/registry/webhook"
+  }
+  description = "Map of Function App name → Kudu container deployment webhook URL. CI/CD POSTs to this URL (retrieved from Key Vault) to trigger an image pull and restart without a Terraform apply."
+  sensitive   = true
+}

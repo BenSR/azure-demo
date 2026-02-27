@@ -51,7 +51,6 @@ Complete inventory of every Azure resource expected to be created, including SKU
 | 8 | `snet-stamp-dev-1-asp` | `azurerm_subnet` | `10.100.1.0/24` | 251 | `Microsoft.Web/serverFarms` | App Service Plan VNet integration — Function App outbound traffic. | Phase 1 (core) |
 | — | `snet-stamp-dev-2-pe` | `azurerm_subnet` | `10.100.2.0/24` | 251 | None | Dev stamp 2 PE subnet. | Phase 1 (core) |
 | — | `snet-stamp-dev-2-asp` | `azurerm_subnet` | `10.100.3.0/24` | 251 | `Microsoft.Web/serverFarms` | Dev stamp 2 ASP subnet. | Phase 1 (core) |
-| — | `snet-stamp-test-1-pe` | `azurerm_subnet` | `10.100.4.0/24` | 251 | None | Test stamp 1 PE subnet. | Phase 1 (core) |
 | — | `snet-stamp-prod-1-pe` | `azurerm_subnet` | `10.100.6.0/24` | 251 | None | Prod stamp 1 PE subnet. | Phase 1 (core) |
 
 ### 2.3 Network Security Groups
