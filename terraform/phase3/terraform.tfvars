@@ -51,4 +51,4 @@ api_operations = [
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
-alert_email_receivers = ["ben.somerville.roberts@outlook.com"]
+alert_email_receivers = ["ben.somerville.roberts_outlook.com#EXT#@bensomervillerobertsoutlook.onmicrosoft.com"]
