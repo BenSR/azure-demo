@@ -7,14 +7,17 @@
 #
 #   1. Validate an active Azure CLI session.
 #   2. Create the deploy resource group (rg-core-deploy) for Terraform state.
-#   3. Create a Storage Account + containers (tfstate, tfplans, scripts).
-#   4. Upload setup-runner.sh to the scripts container and generate a SAS URL.
-#   5. Create an App Registration / Service Principal for GitHub Actions.
-#   6. Add OIDC federated credentials for each GitHub Actions environment.
-#   7. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
-#   8. Assign the Entra ID "Directory Readers" role so Terraform can resolve
+#   3. Create a Storage Account + containers (tfstate, tfplans).
+#   4. Create an App Registration / Service Principal for GitHub Actions.
+#   5. Add OIDC federated credentials for each GitHub Actions environment.
+#   6. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
+#   7. Assign the Entra ID "Directory Readers" role so Terraform can resolve
 #      users and groups via the azuread provider.
-#   9. Print the GitHub Actions secrets that need to be configured.
+#   8. Print the GitHub Actions secrets that need to be configured.
+#
+# Note: the scripts container and setup-runner.sh blob are managed by Terraform
+# (runner.tf), not this script.  Terraform runs in GitHub Actions which has
+# data-plane access to blob storage; this script runs locally and does not.
 #
 # Usage:
 #   bash scripts/prepare-azure-env.sh [OPTIONS]
@@ -31,16 +34,12 @@
 #
 # Requirements:
 #   - Azure CLI >= 2.55 (for federated credential support)
-#   - jq, python3
+#   - jq
 #   - An authenticated Azure CLI session with sufficient privileges
 #     (Owner or User Access Administrator on the target subscription)
 # =============================================================================
 
 set -euo pipefail
-
-# Absolute path to the directory containing this script, so sibling scripts
-# (setup-runner.sh) can be found regardless of the caller's working directory.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Colour helpers ──────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -222,47 +221,6 @@ create_state_storage() {
       }]
     }' \
     --output none 2>/dev/null || warn "Could not set lifecycle policy (may need Storage Account Contributor)."
-}
-
-# ─── Upload runner setup script to blob storage ───────────────────────────────
-# Creates the scripts container (if absent) and uploads setup-runner.sh.
-# The Azure Custom Script Extension authenticates to this container using the
-# storage account key (read at plan time via Terraform data source), so no SAS
-# token is needed — re-run this script whenever setup-runner.sh is updated.
-
-upload_runner_script() {
-  header "Runner setup script (blob storage)"
-
-  local setup_script="${SCRIPT_DIR}/setup-runner.sh"
-  [[ -f "$setup_script" ]] \
-    || die "Runner setup script not found at: ${setup_script}"
-
-  # ── scripts container ────────────────────────────────────────────────────────
-  if az storage container show \
-      --name         "scripts" \
-      --account-name "$SA_NAME" \
-      --auth-mode    login \
-      &>/dev/null 2>&1; then
-    success "Container 'scripts' already exists."
-  else
-    az storage container create \
-      --name         "scripts" \
-      --account-name "$SA_NAME" \
-      --auth-mode    login \
-      --output       none
-    success "Created container: scripts"
-  fi
-
-  # ── upload ────────────────────────────────────────────────────────────────────
-  az storage blob upload \
-    --account-name   "$SA_NAME" \
-    --container-name "scripts" \
-    --name           "setup-runner.sh" \
-    --file           "$setup_script" \
-    --auth-mode      login \
-    --overwrite \
-    --output         none
-  success "Uploaded setup-runner.sh → ${SA_NAME}/scripts/setup-runner.sh"
 }
 
 # ─── Create App Registration and Service Principal ───────────────────────────
@@ -482,7 +440,7 @@ print_summary() {
   echo -e "${BOLD}Resources created:${RST}"
   echo "  Resource group : ${DEPLOY_RG} (${LOCATION})"
   echo "  Storage account: ${SA_NAME}"
-  echo "  Containers     : tfstate, tfplans, scripts"
+  echo "  Containers     : tfstate, tfplans (scripts managed by Terraform)"
   echo "  App / SP name  : ${SP_NAME}"
   echo "  App ID (client): ${APP_ID}"
   echo ""
@@ -545,7 +503,6 @@ main() {
 
   create_deploy_rg
   create_state_storage
-  upload_runner_script
   create_service_principal
   add_federated_credentials
   assign_roles
