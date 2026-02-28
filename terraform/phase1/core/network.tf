@@ -64,7 +64,6 @@ module "vnet" {
     {
       name             = "snet-runner"
       address_prefixes = [local.subnet_cidrs.runner]
-      delegation       = "GitHub.Network/networkSettings"
     },
     {
       name             = "snet-jumpbox"
@@ -72,7 +71,8 @@ module "vnet" {
     },
   ]
 
-  # All subnets share the same NAT Gateway for deterministic egress.
+  # All subnets share the same NAT Gateway. The runner subnet is the only one
+  # whose NSG allows internet egress; other subnets have deny-all outbound.
   attach_nat_gateway = true
   nat_gateway_id     = azurerm_nat_gateway.this.id
 
@@ -391,7 +391,23 @@ resource "azurerm_network_security_rule" "shared_pe_out_deny_all" {
   network_security_group_name = module.vnet.nsg_names["snet-shared-pe"]
 }
 
-# ─── snet-runner  (GitHub-hosted runner — internet egress via NAT GW) ─────────
+# ─── snet-runner  (Self-hosted runner VM — internet egress via NAT GW) ────────
+
+resource "azurerm_network_security_rule" "runner_in_allow_ssh_from_jumpbox" {
+  # SSH access for the runner VM is restricted to the jumpbox.
+  # Use: az ssh vm --name vm-runner-core --resource-group rg-core (from jumpbox)
+  name                        = "allow-inbound-ssh-from-jumpbox"
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "22"
+  source_address_prefix       = local.subnet_cidrs.jumpbox
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.core.name
+  network_security_group_name = module.vnet.nsg_names["snet-runner"]
+}
 
 resource "azurerm_network_security_rule" "runner_in_deny_all" {
   name                        = "deny-all-inbound"

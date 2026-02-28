@@ -1,0 +1,178 @@
+name: "Infra — Workload — Dev Apply"
+
+# Runs on merge to dev. Applies phase1/env (public runner), then phase3
+# (self-hosted runner, required for private Key Vault and APIM endpoints).
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "terraform/phase1/env/**"
+      - "terraform/phase3/**"
+      - "terraform/modules/**"
+      - ".github/workflows/infra-workload-dev.yml"
+
+concurrency:
+  group: "infra-workload-dev"
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  ARM_USE_OIDC: "true"
+  TF_VERSION: "~1.7"
+  ENV_ROOT: "terraform/phase1/env"
+  PH3_ROOT: "terraform/phase3"
+
+jobs:
+  apply-env:
+    name: "phase1/env — Plan & Apply"
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase1-env.tfstate"
+
+      - name: "Terraform workspace — dev"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} workspace select dev \
+            || terraform -chdir=${{ env.ENV_ROOT }} workspace new dev
+
+      - name: "Terraform plan"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var-file=dev.tfvars \
+            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
+            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
+            -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -out=/tmp/tfplan-env-dev \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## phase1/env Plan — \`dev\`"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Terraform apply"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} apply \
+            -no-color \
+            /tmp/tfplan-env-dev 2>&1 | tee /tmp/apply-output.txt
+
+          {
+            echo "## phase1/env Apply — \`dev\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Applied by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            tail -30 /tmp/apply-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-phase3:
+    name: "phase3 — Plan & Apply"
+    runs-on: [self-hosted, linux]
+    needs: apply-env
+    environment: dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase3.tfstate"
+
+      - name: "Terraform workspace — dev"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} workspace select dev \
+            || terraform -chdir=${{ env.PH3_ROOT }} workspace new dev
+
+      - name: "Terraform plan"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var-file=dev.tfvars \
+            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
+            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
+            -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -out=/tmp/tfplan-phase3-dev \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## phase3 Plan — \`dev\`"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Terraform apply"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} apply \
+            -no-color \
+            /tmp/tfplan-phase3-dev 2>&1 | tee /tmp/apply-output.txt
+
+          {
+            echo "## phase3 Apply — \`dev\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Applied by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            tail -30 /tmp/apply-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

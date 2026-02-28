@@ -1,14 +1,3 @@
-terraform {
-  required_version = ">= 1.7"
-
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.110"
-    }
-  }
-}
-
 locals {
   # Derive the NSG name prefix from the VNet name.
   # Convention: vnet-wkld-shared-dev  →  nsg-wkld-shared-dev

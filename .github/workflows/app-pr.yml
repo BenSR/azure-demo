@@ -1,0 +1,73 @@
+name: "App — PR Validate"
+
+# Runs on every PR to dev/main. Tests must pass and Docker must build cleanly
+# before the PR can merge. No image is pushed.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "function_app/**"
+      - ".github/workflows/app-*.yml"
+
+concurrency:
+  group: "app-pr-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: "Test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: function_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: function_app/requirements.txt
+
+      - name: "Install dependencies"
+        run: pip install -r requirements.txt pytest pytest-cov
+
+      - name: "Run tests with coverage"
+        run: |
+          pytest tests/ -v \
+            --cov=function_app \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
+            2>&1 | tee /tmp/test-output.txt
+
+          {
+            echo "## Test Results — PR"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Branch | \`${{ github.head_ref }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            cat /tmp/test-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-check:
+    name: "Docker build (validate)"
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Docker build (no push)"
+        run: |
+          docker build --tag "wkld-api:ci" ./function_app
+          echo "Build succeeded — image not pushed (PR validate only)."

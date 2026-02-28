@@ -26,6 +26,13 @@ location = "uksouth"
 
 jumpbox_vm_size = "Standard_B2s"
 
+# ─── Self-hosted runner ────────────────────────────────────────────────────────
+# runner_admin_upn: the Entra ID user who receives "Virtual Machine Administrator
+# Login" on the runner VM, enabling SSH via `az ssh vm` from the jumpbox.
+
+runner_vm_size   = "Standard_B2s"
+runner_admin_upn = "user@example.com" # TODO: replace with your Entra ID UPN
+
 # ─── Stamp subnets ────────────────────────────────────────────────────────────
 # Each stamp gets a PE subnet (Private Endpoints) and an ASP subnet (App
 # Service Plan VNet integration).  CIDRs must fall within 10.100.0.0/16.

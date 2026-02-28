@@ -1,0 +1,121 @@
+name: "App — Dev Deploy"
+
+# Runs on merge to dev. Tests gate the build; a failed test prevents a broken
+# image from reaching ACR. Docker operations run on the self-hosted runner
+# because ACR has public network access disabled.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "function_app/**"
+      - ".github/workflows/app-dev.yml"
+
+concurrency:
+  group: "app-dev"
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: "acrcore"
+  IMAGE_REPO: "wkld-api"
+  DEV_STAMPS: "1 2"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: "Test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: function_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: function_app/requirements.txt
+
+      - name: "Install dependencies"
+        run: pip install -r requirements.txt pytest pytest-cov
+
+      - name: "Run tests with coverage"
+        run: |
+          pytest tests/ -v \
+            --cov=function_app \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
+            2>&1 | tee /tmp/test-output.txt
+
+          {
+            echo "## Test Results — \`dev\`"
+            echo ""
+            echo '```'
+            cat /tmp/test-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-push-deploy:
+    name: "Build, Push & Deploy"
+    runs-on: [self-hosted, linux]
+    needs: test
+    environment: dev
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "ACR login"
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: "Docker build & push (:dev)"
+        run: |
+          IMAGE="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:dev"
+          docker build --tag "$IMAGE" ./function_app
+          docker push "$IMAGE"
+          echo "Pushed: $IMAGE"
+
+      - name: "Deploy to dev stamps"
+        run: |
+          for N in ${{ env.DEV_STAMPS }}; do
+            KV="kv-wkld-${N}-dev"
+            echo "Triggering deploy webhook for stamp ${N} (${KV})..."
+            WEBHOOK=$(az keyvault secret show \
+              --vault-name "$KV" \
+              --name deploy-webhook-url \
+              --query value \
+              --output tsv)
+            curl --silent --show-error --fail --max-time 30 -X POST "$WEBHOOK"
+            echo "Stamp ${N}: webhook accepted."
+          done
+
+      - name: "Deploy summary"
+        if: always()
+        run: |
+          {
+            echo "## App Deploy — \`dev\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:dev\` |"
+            echo "| Stamps | \`${{ env.DEV_STAMPS }}\` |"
+            echo "| Deployed by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
