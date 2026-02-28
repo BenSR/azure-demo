@@ -65,7 +65,7 @@ die() {
 # ─── Dependency checks ───────────────────────────────────────────────────────
 check_deps() {
   local missing=()
-  for cmd in az jq python3; do
+  for cmd in az jq; do
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
   done
   [[ ${#missing[@]} -eq 0 ]] || die "Missing required tools: ${missing[*]}"
@@ -225,16 +225,10 @@ create_state_storage() {
 }
 
 # ─── Upload runner setup script to blob storage ───────────────────────────────
-# Uploads setup-runner.sh to the scripts container and generates a read-only
-# SAS URL with a ~3-year expiry.  The URL is stored in RUNNER_SCRIPT_SAS_URL
-# for inclusion in the secrets summary.
-#
-# The Azure Custom Script Extension on the runner VM uses this URL to download
-# the script at provisioning time, so the script can be re-deployed simply by
-# re-applying Terraform (which triggers the extension with the current URL).
-#
-# If the storage account key is ever rotated, re-run this script to generate
-# a fresh SAS URL and update the RUNNER_SCRIPT_SAS_URL GitHub secret.
+# Creates the scripts container (if absent) and uploads setup-runner.sh.
+# The Azure Custom Script Extension authenticates to this container using the
+# storage account key (read at plan time via Terraform data source), so no SAS
+# token is needed — re-run this script whenever setup-runner.sh is updated.
 
 upload_runner_script() {
   header "Runner setup script (blob storage)"
@@ -269,30 +263,6 @@ upload_runner_script() {
     --overwrite \
     --output         none
   success "Uploaded setup-runner.sh → ${SA_NAME}/scripts/setup-runner.sh"
-
-  # ── SAS token (read-only, ~3 years) ──────────────────────────────────────────
-  local expiry account_key
-  expiry=$(python3 -c \
-    "import datetime; print((datetime.datetime.utcnow() + datetime.timedelta(days=1095)).strftime('%Y-%m-%dT%H:%MZ'))")
-
-  account_key=$(az storage account keys list \
-    --account-name   "$SA_NAME" \
-    --resource-group "$DEPLOY_RG" \
-    --query          "[0].value" \
-    --output         tsv)
-
-  RUNNER_SCRIPT_SAS_URL=$(az storage blob generate-sas \
-    --account-name   "$SA_NAME" \
-    --account-key    "$account_key" \
-    --container-name "scripts" \
-    --name           "setup-runner.sh" \
-    --permissions    r \
-    --expiry         "$expiry" \
-    --https-only \
-    --full-uri \
-    --output         tsv)
-
-  success "SAS URL generated (expires: ${expiry})"
 }
 
 # ─── Create App Registration and Service Principal ───────────────────────────
@@ -526,7 +496,6 @@ print_summary() {
   printf "  %-35s %s\n" "ARM_TENANT_ID"              "$TENANT_ID"
   printf "  %-35s %s\n" "ARM_SUBSCRIPTION_ID"        "$SUBSCRIPTION_ID"
   printf "  %-35s %s\n" "TF_STATE_STORAGE_ACCOUNT"   "$SA_NAME"
-  printf "  %-35s %s\n" "RUNNER_SCRIPT_SAS_URL"      "$RUNNER_SCRIPT_SAS_URL"
   echo ""
   echo -e "  ${YLW}Also required (create separately in GitHub):${RST}"
   printf "  %-35s %s\n" "RUNNER_MANAGEMENT_PAT" "<GitHub PAT with manage_runners:repo scope>"
@@ -573,8 +542,6 @@ main() {
   echo ""
   read -rp "  Proceed? [y/N] " confirm
   [[ "${confirm,,}" == "y" ]] || { info "Aborted."; exit 0; }
-
-  RUNNER_SCRIPT_SAS_URL=""
 
   create_deploy_rg
   create_state_storage

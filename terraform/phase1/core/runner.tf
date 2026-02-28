@@ -102,16 +102,20 @@ resource "azurerm_virtual_machine_extension" "runner_aad_ssh" {
 }
 
 # ─── Custom Script Extension — runner setup ───────────────────────────────────
-# Downloads setup-runner.sh from blob storage (via a read-only SAS URL stored
-# as the RUNNER_SCRIPT_SAS_URL GitHub secret) and executes it.
+# Downloads setup-runner.sh from the scripts container of the state storage
+# account and executes it.
 #
-# The runner_management_pat is passed in protected_settings so Azure encrypts
-# it at rest and omits it from activity logs.  The script uses the PAT to call
-# the GitHub API for a fresh 1-hour registration token at execution time.
+# fileUris contains the plain HTTPS blob URL (no SAS); the storage account
+# name and key are passed in protected_settings so Azure encrypts them at rest
+# and omits them from activity logs.  The key is read at plan time via the
+# azurerm_storage_account data source — no extra GitHub secret required.
+#
+# The runner_management_pat (also in protected_settings) is used by the script
+# to exchange for a fresh 1-hour GitHub registration token at execution time.
 #
 # To force a re-run (e.g. re-register after a runner goes offline), update the
 # runner_management_pat secret in GitHub and re-apply Terraform — the changed
-# protected_settings value triggers the extension to execute again.
+# protected_settings value triggers the extension to re-execute.
 
 resource "azurerm_virtual_machine_extension" "runner_setup" {
   name                       = "runner-setup"
@@ -122,11 +126,15 @@ resource "azurerm_virtual_machine_extension" "runner_setup" {
   auto_upgrade_minor_version = true
 
   settings = jsonencode({
-    fileUris = [var.runner_script_sas_url]
+    fileUris = [
+      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/setup-runner.sh"
+    ]
   })
 
   protected_settings = jsonencode({
-    commandToExecute = "bash setup-runner.sh '${var.runner_management_pat}'"
+    commandToExecute  = "bash setup-runner.sh '${var.runner_management_pat}'"
+    storageAccountName = var.deploy_storage_account_name
+    storageAccountKey  = data.azurerm_storage_account.deploy.primary_access_key
   })
 
   tags = local.tags
