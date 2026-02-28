@@ -31,7 +31,7 @@ jumpbox_vm_size = "Standard_B2s"
 # Login" on the runner VM, enabling SSH via `az ssh vm` from the jumpbox.
 
 runner_vm_size   = "Standard_B2s"
-runner_admin_upn = "ben.somerville.roberts_outlook.com#EXT#@bensomervillerobertsoutlook.onmicrosoft.com"
+runner_admin_upn = "me@bensomervillerobertsoutlook.onmicrosoft.com"
 
 # ─── Stamp subnets ────────────────────────────────────────────────────────────
 # Each stamp gets a PE subnet (Private Endpoints) and an ASP subnet (App
