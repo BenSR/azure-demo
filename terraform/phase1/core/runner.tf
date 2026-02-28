@@ -6,9 +6,13 @@
 # it to reach GitHub, package repos, and Azure ARM endpoints, while also having
 # private VNet access to ACR, Key Vault, APIM, and storage endpoints.
 #
-# cloud-init (custom_data) installs Docker + Azure CLI, downloads the pinned
-# runner binary, and registers it with GitHub using a short-lived token obtained
-# from the API via runner_github_pat. The runner starts as a systemd service.
+# Setup is handled by the CustomScript extension (runner_setup below), which
+# downloads scripts/setup-runner.sh from blob storage via a SAS URL and runs
+# it at VM provisioning time. The script uses the runner_management_pat to
+# request a fresh short-lived GitHub registration token at execution time,
+# avoiding the 1-hour expiry problem inherent in baking a static token into
+# cloud-init or Terraform state.  Updating the extension settings in Terraform
+# re-triggers the script, allowing runner re-registration without VM recreation.
 #
 # Auth:
 #   - Primary:  Entra ID SSH via AADSSHLoginForLinux extension
@@ -79,68 +83,6 @@ resource "azurerm_linux_virtual_machine" "runner" {
     type = "SystemAssigned"
   }
 
-  # cloud-init:
-  #   1. Install Docker Engine + Azure CLI (tools the runner jobs need)
-  #   2. Download and verify the pinned runner binary
-  #   3. Exchange runner_github_pat for a short-lived registration token
-  #   4. Register and start the runner as a systemd service
-  custom_data = base64encode(<<-INIT
-  #!/bin/bash
-  set -euo pipefail
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl gnupg lsb-release git jq unzip
-
-  # ── Docker Engine (official repo) ──────────────────────────────────────────
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-
-  # ── Azure CLI ──────────────────────────────────────────────────────────────
-  curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
-
-  # Allow the runner admin user to run Docker without sudo
-  usermod -aG docker ${var.runner_admin_username}
-
-  # ── GitHub Actions runner v2.331.0 ─────────────────────────────────────────
-  RUNNER_VERSION="2.331.0"
-  RUNNER_HASH="5fcc01bd546ba5c3f1291c2803658ebd3cedb3836489eda3be357d41bfcf28a7"
-  RUNNER_HOME="/home/${var.runner_admin_username}/actions-runner"
-  RUNNER_USER="${var.runner_admin_username}"
-
-  mkdir -p "$RUNNER_HOME"
-  curl -fsSL -o "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
-    "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
-  echo "$RUNNER_HASH  $RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
-    | shasum -a 256 -c
-  tar xzf "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" -C "$RUNNER_HOME"
-  chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME"
-
-  # Configure the runner as the runner user (config.sh must not run as root).
-  # Registration token is passed in from the runner_registration_token variable
-  # (sourced from the GITHUB_RUNNER_REGISTRATION_TOKEN GitHub secret in CI).
-  sudo -u "$RUNNER_USER" bash -c "
-    '$RUNNER_HOME/config.sh' \
-      --url 'https://github.com/BenSR/azure-demo' \
-      --token '${var.runner_registration_token}' \
-      --name 'azure-self-hosted' \
-      --labels 'self-hosted,linux' \
-      --unattended \
-      --replace
-  "
-
-  # Install as a systemd service and start it
-  "$RUNNER_HOME/svc.sh" install "$RUNNER_USER"
-  "$RUNNER_HOME/svc.sh" start
-  INIT
-  )
-
   tags = local.tags
 }
 
@@ -155,6 +97,37 @@ resource "azurerm_virtual_machine_extension" "runner_aad_ssh" {
   type                       = "AADSSHLoginForLinux"
   type_handler_version       = "1.0"
   auto_upgrade_minor_version = true
+
+  tags = local.tags
+}
+
+# ─── Custom Script Extension — runner setup ───────────────────────────────────
+# Downloads setup-runner.sh from blob storage (via a read-only SAS URL stored
+# as the RUNNER_SCRIPT_SAS_URL GitHub secret) and executes it.
+#
+# The runner_management_pat is passed in protected_settings so Azure encrypts
+# it at rest and omits it from activity logs.  The script uses the PAT to call
+# the GitHub API for a fresh 1-hour registration token at execution time.
+#
+# To force a re-run (e.g. re-register after a runner goes offline), update the
+# runner_management_pat secret in GitHub and re-apply Terraform — the changed
+# protected_settings value triggers the extension to execute again.
+
+resource "azurerm_virtual_machine_extension" "runner_setup" {
+  name                       = "runner-setup"
+  virtual_machine_id         = azurerm_linux_virtual_machine.runner.id
+  publisher                  = "Microsoft.Azure.Extensions"
+  type                       = "CustomScript"
+  type_handler_version       = "2.1"
+  auto_upgrade_minor_version = true
+
+  settings = jsonencode({
+    fileUris = [var.runner_script_sas_url]
+  })
+
+  protected_settings = jsonencode({
+    commandToExecute = "bash setup-runner.sh '${var.runner_management_pat}'"
+  })
 
   tags = local.tags
 }

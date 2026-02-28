@@ -7,13 +7,14 @@
 #
 #   1. Validate an active Azure CLI session.
 #   2. Create the deploy resource group (rg-core-deploy) for Terraform state.
-#   3. Create a Storage Account + containers (tfstate, tfplans).
-#   4. Create an App Registration / Service Principal for GitHub Actions.
-#   5. Add OIDC federated credentials for each GitHub Actions environment.
-#   6. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
-#   7. Assign the Entra ID "Directory Readers" role so Terraform can resolve
+#   3. Create a Storage Account + containers (tfstate, tfplans, scripts).
+#   4. Upload setup-runner.sh to the scripts container and generate a SAS URL.
+#   5. Create an App Registration / Service Principal for GitHub Actions.
+#   6. Add OIDC federated credentials for each GitHub Actions environment.
+#   7. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
+#   8. Assign the Entra ID "Directory Readers" role so Terraform can resolve
 #      users and groups via the azuread provider.
-#   8. Print the GitHub Actions secrets that need to be configured.
+#   9. Print the GitHub Actions secrets that need to be configured.
 #
 # Usage:
 #   bash scripts/prepare-azure-env.sh [OPTIONS]
@@ -30,12 +31,16 @@
 #
 # Requirements:
 #   - Azure CLI >= 2.55 (for federated credential support)
-#   - jq
+#   - jq, python3
 #   - An authenticated Azure CLI session with sufficient privileges
 #     (Owner or User Access Administrator on the target subscription)
 # =============================================================================
 
 set -euo pipefail
+
+# Absolute path to the directory containing this script, so sibling scripts
+# (setup-runner.sh) can be found regardless of the caller's working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Colour helpers ──────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -60,7 +65,7 @@ die() {
 # ─── Dependency checks ───────────────────────────────────────────────────────
 check_deps() {
   local missing=()
-  for cmd in az jq; do
+  for cmd in az jq python3; do
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
   done
   [[ ${#missing[@]} -eq 0 ]] || die "Missing required tools: ${missing[*]}"
@@ -217,6 +222,77 @@ create_state_storage() {
       }]
     }' \
     --output none 2>/dev/null || warn "Could not set lifecycle policy (may need Storage Account Contributor)."
+}
+
+# ─── Upload runner setup script to blob storage ───────────────────────────────
+# Uploads setup-runner.sh to the scripts container and generates a read-only
+# SAS URL with a ~3-year expiry.  The URL is stored in RUNNER_SCRIPT_SAS_URL
+# for inclusion in the secrets summary.
+#
+# The Azure Custom Script Extension on the runner VM uses this URL to download
+# the script at provisioning time, so the script can be re-deployed simply by
+# re-applying Terraform (which triggers the extension with the current URL).
+#
+# If the storage account key is ever rotated, re-run this script to generate
+# a fresh SAS URL and update the RUNNER_SCRIPT_SAS_URL GitHub secret.
+
+upload_runner_script() {
+  header "Runner setup script (blob storage)"
+
+  local setup_script="${SCRIPT_DIR}/setup-runner.sh"
+  [[ -f "$setup_script" ]] \
+    || die "Runner setup script not found at: ${setup_script}"
+
+  # ── scripts container ────────────────────────────────────────────────────────
+  if az storage container show \
+      --name         "scripts" \
+      --account-name "$SA_NAME" \
+      --auth-mode    login \
+      &>/dev/null 2>&1; then
+    success "Container 'scripts' already exists."
+  else
+    az storage container create \
+      --name         "scripts" \
+      --account-name "$SA_NAME" \
+      --auth-mode    login \
+      --output       none
+    success "Created container: scripts"
+  fi
+
+  # ── upload ────────────────────────────────────────────────────────────────────
+  az storage blob upload \
+    --account-name   "$SA_NAME" \
+    --container-name "scripts" \
+    --name           "setup-runner.sh" \
+    --file           "$setup_script" \
+    --auth-mode      login \
+    --overwrite \
+    --output         none
+  success "Uploaded setup-runner.sh → ${SA_NAME}/scripts/setup-runner.sh"
+
+  # ── SAS token (read-only, ~3 years) ──────────────────────────────────────────
+  local expiry account_key
+  expiry=$(python3 -c \
+    "import datetime; print((datetime.datetime.utcnow() + datetime.timedelta(days=1095)).strftime('%Y-%m-%dT%H:%MZ'))")
+
+  account_key=$(az storage account keys list \
+    --account-name   "$SA_NAME" \
+    --resource-group "$DEPLOY_RG" \
+    --query          "[0].value" \
+    --output         tsv)
+
+  RUNNER_SCRIPT_SAS_URL=$(az storage blob generate-sas \
+    --account-name   "$SA_NAME" \
+    --account-key    "$account_key" \
+    --container-name "scripts" \
+    --name           "setup-runner.sh" \
+    --permissions    r \
+    --expiry         "$expiry" \
+    --https-only \
+    --full-uri \
+    --output         tsv)
+
+  success "SAS URL generated (expires: ${expiry})"
 }
 
 # ─── Create App Registration and Service Principal ───────────────────────────
@@ -436,7 +512,7 @@ print_summary() {
   echo -e "${BOLD}Resources created:${RST}"
   echo "  Resource group : ${DEPLOY_RG} (${LOCATION})"
   echo "  Storage account: ${SA_NAME}"
-  echo "  Containers     : tfstate, tfplans"
+  echo "  Containers     : tfstate, tfplans, scripts"
   echo "  App / SP name  : ${SP_NAME}"
   echo "  App ID (client): ${APP_ID}"
   echo ""
@@ -450,6 +526,10 @@ print_summary() {
   printf "  %-35s %s\n" "ARM_TENANT_ID"              "$TENANT_ID"
   printf "  %-35s %s\n" "ARM_SUBSCRIPTION_ID"        "$SUBSCRIPTION_ID"
   printf "  %-35s %s\n" "TF_STATE_STORAGE_ACCOUNT"   "$SA_NAME"
+  printf "  %-35s %s\n" "RUNNER_SCRIPT_SAS_URL"      "$RUNNER_SCRIPT_SAS_URL"
+  echo ""
+  echo -e "  ${YLW}Also required (create separately in GitHub):${RST}"
+  printf "  %-35s %s\n" "RUNNER_MANAGEMENT_PAT" "<GitHub PAT with manage_runners:repo scope>"
   echo ""
 
   echo -e "${BOLD}${YLW}GitHub Actions environments to configure:${RST}"
@@ -494,8 +574,11 @@ main() {
   read -rp "  Proceed? [y/N] " confirm
   [[ "${confirm,,}" == "y" ]] || { info "Aborted."; exit 0; }
 
+  RUNNER_SCRIPT_SAS_URL=""
+
   create_deploy_rg
   create_state_storage
+  upload_runner_script
   create_service_principal
   add_federated_credentials
   assign_roles
