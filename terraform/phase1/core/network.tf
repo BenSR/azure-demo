@@ -90,11 +90,9 @@ module "vnet" {
     "privatelink.azurewebsites.net"      = module.private_dns.websites_zone_id
   }
 
-  # NSG flow logs.
-  flow_logs_enabled            = true
-  log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
-  log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
-  flow_log_storage_account_id  = azurerm_storage_account.diag.id
+  # NSG flow logs disabled: Azure blocked new NSG flow log creation from June 2025.
+  # Migrate to VNet-level flow logs once the azurerm provider is upgraded to ~> 4.0.
+  flow_logs_enabled = false
 
   tags = local.tags
 
@@ -139,10 +137,7 @@ module "workload_stamp_subnet" {
     jumpbox   = module.vnet.nsg_names["snet-jumpbox"]
   }
 
-  flow_logs_enabled            = true
-  log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
-  log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
-  flow_log_storage_account_id  = azurerm_storage_account.diag.id
+  flow_logs_enabled = false
 
   tags = local.tags
 }

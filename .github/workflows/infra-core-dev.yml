@@ -59,6 +59,7 @@ jobs:
 
       - name: "Terraform plan"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \

@@ -68,6 +68,7 @@ jobs:
 
       - name: "Terraform plan"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.ENV_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var-file=prod.tfvars \
@@ -147,6 +148,7 @@ jobs:
 
       - name: "Terraform plan"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.PH3_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var-file=prod.tfvars \
@@ -238,6 +240,7 @@ jobs:
 
       - name: "Terraform apply"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.ENV_ROOT }} apply \
             -no-color \
             /tmp/tfplan-env-prod 2>&1 | tee /tmp/apply-output.txt
@@ -302,6 +305,7 @@ jobs:
 
       - name: "Terraform apply"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.PH3_ROOT }} apply \
             -no-color \
             /tmp/tfplan-phase3-prod 2>&1 | tee /tmp/apply-output.txt
