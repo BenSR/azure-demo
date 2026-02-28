@@ -81,5 +81,5 @@ variable "runner_admin_upn" {
 variable "runner_registration_token" {
   type        = string
   sensitive   = true
-  description = "GitHub Actions runner registration token (obtained from the GitHub portal or API). Used at VM first boot to register the runner. Pass via GITHUB_RUNNER_REGISTRATION_TOKEN GitHub secret — never store in tfvars."
+  description = "GitHub Actions runner registration token (obtained from the GitHub portal or API). Used at VM first boot to register the runner. Pass via RUNNER_REGISTRATION_TOKEN GitHub secret — never store in tfvars."
 }

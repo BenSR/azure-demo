@@ -62,7 +62,7 @@ jobs:
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
-            -var="runner_registration_token=${{ secrets.GITHUB_RUNNER_REGISTRATION_TOKEN }}" \
+            -var="runner_registration_token=${{ secrets.RUNNER_REGISTRATION_TOKEN }}" \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
