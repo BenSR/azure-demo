@@ -103,6 +103,22 @@ output "runner_private_ip" {
   description = "Private IP of the runner VM (snet-runner). SSH from jumpbox: az ssh vm --name vm-runner-core --resource-group rg-core"
 }
 
+output "jumpbox_public_ip" {
+  value       = azurerm_public_ip.jumpbox.ip_address
+  description = "Public IP address of the jump box. RDP target."
+}
+
+output "jumpbox_admin_username" {
+  value       = var.jumpbox_admin_username
+  description = "Local admin username for the jump box."
+}
+
+output "jumpbox_admin_password" {
+  value       = random_password.jumpbox.result
+  sensitive   = true
+  description = "Local admin password for the jump box. Retrieve with: terraform output -raw jumpbox_admin_password"
+}
+
 output "runner_ssh_private_key_pem" {
   value       = tls_private_key.runner.private_key_pem
   sensitive   = true
