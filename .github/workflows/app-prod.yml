@@ -21,7 +21,8 @@ permissions:
   contents: read
 
 env:
-  ACR_NAME: "acrcore"
+  # ACR name is acr<name_suffix><first-8-hex-chars-of-subscription-id>.
+  # Computed in each job from ARM_SUBSCRIPTION_ID.
   IMAGE_REPO: "wkld-api"
   PROD_STAMPS: "1"
   PYTHON_VERSION: "3.11"
@@ -48,6 +49,7 @@ jobs:
 
       - name: "Run tests with coverage"
         run: |
+          set -o pipefail
           pytest tests/ -v \
             --cov=function_app \
             --cov-report=term-missing \
@@ -81,8 +83,13 @@ jobs:
           tenant-id: ${{ secrets.ARM_TENANT_ID }}
           subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
 
+      - name: "Set ACR name"
+        run: |
+          sub="${ARM_SUBSCRIPTION_ID//-/}"
+          echo "ACR_NAME=acrcore${sub:0:8}" >> "$GITHUB_ENV"
+
       - name: "ACR login"
-        run: az acr login --name ${{ env.ACR_NAME }}
+        run: az acr login --name "$ACR_NAME"
 
       - name: "Docker build & push (:latest)"
         run: |
@@ -133,6 +140,11 @@ jobs:
           client-id: ${{ secrets.ARM_CLIENT_ID }}
           tenant-id: ${{ secrets.ARM_TENANT_ID }}
           subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Set ACR name"
+        run: |
+          sub="${ARM_SUBSCRIPTION_ID//-/}"
+          echo "ACR_NAME=acrcore${sub:0:8}" >> "$GITHUB_ENV"
 
       - name: "Deploy to prod stamps"
         run: |
