@@ -54,8 +54,7 @@ locals {
   # correctly.
   environment = terraform.workspace == "default" ? "dev" : terraform.workspace
 
-  name_suffix      = "${local.workload}-shared-${local.environment}"
-  core_name_suffix = "${local.workload}-core-${local.environment}"
+  name_suffix = "${local.workload}-shared-${local.environment}"
 
   tags = {
     workload    = local.workload
