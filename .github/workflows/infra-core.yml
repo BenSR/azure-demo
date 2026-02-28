@@ -6,12 +6,13 @@
 # Core is deployed ONCE — no workspaces, no dev/prod split.
 #
 # ┌─────────────┬──────────────────────────────────────────────────────────┐
-# │ Trigger     │ Behaviour                                                │
-# ├─────────────┼──────────────────────────────────────────────────────────┤
-# │ PR → dev    │ Lint + validate (public runner, no credentials)          │
-# │ PR → main   │ Lint + validate (public runner, no credentials)          │
-# │ Push → dev  │ Plan only — core has no dev workspace; no auto-apply     │
-# │ Push → main │ Plan → upload plan → await approval → apply              │
+# │ Trigger          │ Behaviour                                           │
+# ├──────────────────┼─────────────────────────────────────────────────────┤
+# │ Push → feature/* │ Lint + validate (public runner, no credentials)     │
+# │ PR → dev         │ Lint + validate (public runner, no credentials)     │
+# │ PR → main        │ Lint + validate (public runner, no credentials)     │
+# │ Push → dev       │ Plan only — core has no dev workspace; no auto-apply│
+# │ Push → main      │ Plan → upload plan → await approval → apply         │
 # └─────────────┴──────────────────────────────────────────────────────────┘
 #
 # Required GitHub secrets (Settings → Secrets and variables → Actions):
@@ -29,7 +30,7 @@ name: "Infra — Core (Phase 1)"
 
 on:
   push:
-    branches: [dev, main]
+    branches: [dev, main, "feature/**"]
     paths:
       - "terraform/phase1/core/**"
       - "terraform/modules/**"
@@ -64,7 +65,7 @@ jobs:
   validate:
     name: "Lint & Validate"
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/'))
     steps:
       - uses: actions/checkout@v4
 

@@ -7,11 +7,12 @@
 # reaches private Key Vault and APIM endpoints.
 #
 # ┌─────────────┬──────────────────────────────────────────────────────────────┐
-# │ Trigger     │ Behaviour                                                    │
-# ├─────────────┼──────────────────────────────────────────────────────────────┤
-# │ PR → dev    │ Lint + validate phase1/env and phase3 (public runner, no     │
-# │             │ credentials)                                                 │
-# │ PR → main   │ Same as PR → dev                                             │
+# │ Trigger          │ Behaviour                                               │
+# ├──────────────────┼─────────────────────────────────────────────────────────┤
+# │ Push → feature/* │ Lint + validate phase1/env and phase3 (public runner,   │
+# │                  │ no credentials)                                         │
+# │ PR → dev         │ Same as push to feature/*                               │
+# │ PR → main        │ Same as push to feature/*                               │
 # │ Push → dev  │ Auto plan+apply phase1/env (public runner, workspace=dev),   │
 # │             │ then auto plan+apply phase3 (VNet runner, workspace=dev)     │
 # │ Push → main │ Plan phase1/env + phase3 (parallel) → upload plans →        │
@@ -37,7 +38,7 @@ name: "Infra — Workload (Phase 1/env + Phase 3)"
 
 on:
   push:
-    branches: [dev, main]
+    branches: [dev, main, "feature/**"]
     paths:
       - "terraform/phase1/env/**"
       - "terraform/phase3/**"
@@ -75,7 +76,7 @@ jobs:
   validate:
     name: "Lint & Validate"
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/'))
     steps:
       - uses: actions/checkout@v4
 
