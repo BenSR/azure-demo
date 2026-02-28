@@ -10,3 +10,12 @@
 #   ARM_CLIENT_ID       = (auto-detected)
 #   ARM_TENANT_ID       = (auto-detected via OIDC)
 #   ARM_SUBSCRIPTION_ID = var.subscription_id
+
+data "azurerm_client_config" "current" {}
+
+# ─── VM Administrator Lookup ─────────────────────────────────────────────────
+# Resolves the Entra ID user for runner VM admin login RBAC.
+
+data "azuread_user" "runner_admin" {
+  user_principal_name = var.runner_admin_upn
+}

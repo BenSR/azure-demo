@@ -2,7 +2,7 @@
 
 > Extracted from the Cloud Platform Engineering Technical Assessment (Azure) specification.
 > Includes all core requirements and stretch goals.
-> See [constraints-and-assumptions.md](constraints-and-assumptions.md) for project constraints, assumptions, and deliverables.
+> See [Constraints and Assumptions](Constraints-and-Assumptions) for project constraints, assumptions, and deliverables.
 
 ---
 

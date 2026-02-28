@@ -1,0 +1,321 @@
+name: "Infra — Workload — Prod Apply"
+
+# Runs on merge to main. Both plans run in parallel and are saved to blob
+# storage. A single approval gate covers both. Applies run sequentially
+# (phase1/env first, then phase3 which reads phase1/env remote state).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/phase1/env/**"
+      - "terraform/phase3/**"
+      - "terraform/modules/**"
+      - ".github/workflows/infra-workload-prod.yml"
+
+concurrency:
+  group: "infra-workload-prod"
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  ARM_USE_OIDC: "true"
+  TF_VERSION: "~1.7"
+  ENV_ROOT: "terraform/phase1/env"
+  PH3_ROOT: "terraform/phase3"
+
+jobs:
+  plan-env:
+    name: "phase1/env — Plan"
+    runs-on: ubuntu-latest
+    outputs:
+      plan-key: ${{ steps.set-key.outputs.key }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase1-env.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} workspace select prod \
+            || terraform -chdir=${{ env.ENV_ROOT }} workspace new prod
+
+      - name: "Terraform plan"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var-file=prod.tfvars \
+            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
+            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
+            -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -out=/tmp/tfplan-env-prod \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## phase1/env Plan — production"
+            echo ""
+            echo "> [!IMPORTANT]"
+            echo "> Review both plans (phase1/env and phase3), then approve the **Await approval** job."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`env-prod-${{ github.run_id }}.tfplan\` |"
+            echo "| Triggered by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Set plan blob key"
+        id: set-key
+        run: echo "key=env-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload plan to blob storage"
+        run: |
+          az storage blob upload \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "env-prod-${{ github.run_id }}.tfplan" \
+            --file /tmp/tfplan-env-prod \
+            --auth-mode login \
+            --overwrite
+
+  plan-phase3:
+    name: "phase3 — Plan"
+    runs-on: [self-hosted, linux]
+    outputs:
+      plan-key: ${{ steps.set-key.outputs.key }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase3.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} workspace select prod \
+            || terraform -chdir=${{ env.PH3_ROOT }} workspace new prod
+
+      - name: "Terraform plan"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var-file=prod.tfvars \
+            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
+            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
+            -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -out=/tmp/tfplan-phase3-prod \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## phase3 Plan — production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`phase3-prod-${{ github.run_id }}.tfplan\` |"
+            echo "| Triggered by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Set plan blob key"
+        id: set-key
+        run: echo "key=phase3-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload plan to blob storage"
+        run: |
+          az storage blob upload \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "phase3-prod-${{ github.run_id }}.tfplan" \
+            --file /tmp/tfplan-phase3-prod \
+            --auth-mode login \
+            --overwrite
+
+  approve:
+    name: "Await approval"
+    needs: [plan-env, plan-phase3]
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - run: echo "Approved by ${{ github.actor }}."
+
+  apply-env:
+    name: "phase1/env — Apply"
+    needs: [plan-env, approve]
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase1-env.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: terraform -chdir=${{ env.ENV_ROOT }} workspace select prod
+
+      - name: "Download plan from blob storage"
+        run: |
+          az storage blob download \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "${{ needs.plan-env.outputs.plan-key }}" \
+            --file /tmp/tfplan-env-prod \
+            --auth-mode login
+
+      - name: "Terraform apply"
+        run: |
+          terraform -chdir=${{ env.ENV_ROOT }} apply \
+            -no-color \
+            /tmp/tfplan-env-prod 2>&1 | tee /tmp/apply-output.txt
+
+          {
+            echo "## phase1/env Apply — production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`${{ needs.plan-env.outputs.plan-key }}\` |"
+            echo "| Applied by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            tail -40 /tmp/apply-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply-phase3:
+    name: "phase3 — Apply"
+    needs: [plan-phase3, apply-env]
+    runs-on: [self-hosted, linux]
+    environment: prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase3.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: terraform -chdir=${{ env.PH3_ROOT }} workspace select prod
+
+      - name: "Download plan from blob storage"
+        run: |
+          az storage blob download \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "${{ needs.plan-phase3.outputs.plan-key }}" \
+            --file /tmp/tfplan-phase3-prod \
+            --auth-mode login
+
+      - name: "Terraform apply"
+        run: |
+          terraform -chdir=${{ env.PH3_ROOT }} apply \
+            -no-color \
+            /tmp/tfplan-phase3-prod 2>&1 | tee /tmp/apply-output.txt
+
+          {
+            echo "## phase3 Apply — production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`${{ needs.plan-phase3.outputs.plan-key }}\` |"
+            echo "| Applied by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            tail -40 /tmp/apply-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -64,8 +64,6 @@ module "vnet" {
     {
       name             = "snet-runner"
       address_prefixes = [local.subnet_cidrs.runner]
-      delegation       = "GitHub.Network/networkSettings"
-      nat_gateway_id   = azurerm_nat_gateway.this.id
     },
     {
       name             = "snet-jumpbox"
@@ -73,10 +71,27 @@ module "vnet" {
     },
   ]
 
-  # Link all 7 Private DNS zones so every subnet resolves PE FQDNs.
-  private_dns_zone_ids = module.private_dns.all_zone_ids
+  # All subnets share the same NAT Gateway. The runner subnet is the only one
+  # whose NSG allows internet egress; other subnets have deny-all outbound.
+  attach_nat_gateway = true
+  nat_gateway_id     = azurerm_nat_gateway.this.id
 
-  # NSG flow logs — enabled once Log Analytics and diagnostic storage exist.
+  # Link all 7 Private DNS zones so every subnet resolves PE FQDNs.
+  # Keys are static zone name literals (known at plan time); values are the
+  # zone resource IDs (apply-time). This avoids the Terraform for_each
+  # limitation where set/map keys must be known before apply.
+  private_dns_zones = {
+    "privatelink.vaultcore.azure.net"    = module.private_dns.key_vault_zone_id
+    "privatelink.blob.core.windows.net"  = module.private_dns.blob_storage_zone_id
+    "privatelink.file.core.windows.net"  = module.private_dns.file_storage_zone_id
+    "privatelink.table.core.windows.net" = module.private_dns.table_storage_zone_id
+    "privatelink.queue.core.windows.net" = module.private_dns.queue_storage_zone_id
+    "privatelink.azurecr.io"             = module.private_dns.acr_zone_id
+    "privatelink.azurewebsites.net"      = module.private_dns.websites_zone_id
+  }
+
+  # NSG flow logs.
+  flow_logs_enabled            = true
   log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
   log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
   flow_log_storage_account_id  = azurerm_storage_account.diag.id
@@ -124,6 +139,7 @@ module "workload_stamp_subnet" {
     jumpbox   = module.vnet.nsg_names["snet-jumpbox"]
   }
 
+  flow_logs_enabled            = true
   log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
   log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
   flow_log_storage_account_id  = azurerm_storage_account.diag.id
@@ -375,7 +391,23 @@ resource "azurerm_network_security_rule" "shared_pe_out_deny_all" {
   network_security_group_name = module.vnet.nsg_names["snet-shared-pe"]
 }
 
-# ─── snet-runner  (GitHub-hosted runner — internet egress via NAT GW) ─────────
+# ─── snet-runner  (Self-hosted runner VM — internet egress via NAT GW) ────────
+
+resource "azurerm_network_security_rule" "runner_in_allow_ssh_from_jumpbox" {
+  # SSH access for the runner VM is restricted to the jumpbox.
+  # Use: az ssh vm --name vm-runner-core --resource-group rg-core (from jumpbox)
+  name                        = "allow-inbound-ssh-from-jumpbox"
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "22"
+  source_address_prefix       = local.subnet_cidrs.jumpbox
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.core.name
+  network_security_group_name = module.vnet.nsg_names["snet-runner"]
+}
 
 resource "azurerm_network_security_rule" "runner_in_deny_all" {
   name                        = "deny-all-inbound"

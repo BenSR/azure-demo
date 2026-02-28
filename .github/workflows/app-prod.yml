@@ -1,0 +1,164 @@
+name: "App — Prod Deploy"
+
+# Runs on merge to main. Image is built and pushed to ACR before the approval
+# gate so the reviewer can inspect it. If approval is rejected the image sits
+# in ACR unused — the running prod environment is unaffected until the webhook
+# fires.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "function_app/**"
+      - ".github/workflows/app-prod.yml"
+
+concurrency:
+  group: "app-prod"
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: "acrcore"
+  IMAGE_REPO: "wkld-api"
+  PROD_STAMPS: "1"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: "Test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: function_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: function_app/requirements.txt
+
+      - name: "Install dependencies"
+        run: pip install -r requirements.txt pytest pytest-cov
+
+      - name: "Run tests with coverage"
+        run: |
+          pytest tests/ -v \
+            --cov=function_app \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
+            2>&1 | tee /tmp/test-output.txt
+
+          {
+            echo "## Test Results — production"
+            echo ""
+            echo '```'
+            cat /tmp/test-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-push:
+    name: "Build & Push"
+    runs-on: [self-hosted, linux]
+    needs: test
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "ACR login"
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: "Docker build & push (:latest)"
+        run: |
+          IMAGE="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:latest"
+          docker build --tag "$IMAGE" ./function_app
+          docker push "$IMAGE"
+          echo "Pushed: $IMAGE"
+
+      - name: "Build summary"
+        run: |
+          {
+            echo "## App Build — production (pre-approval)"
+            echo ""
+            echo "> [!IMPORTANT]"
+            echo "> Review the image before approving the **Await approval** job:"
+            echo "> \`az acr repository show-tags --name ${{ env.ACR_NAME }} --repository ${{ env.IMAGE_REPO }} --orderby time_desc --output tsv\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:latest\` |"
+            echo "| Triggered by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approve:
+    name: "Await approval"
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - run: echo "Approved by ${{ github.actor }}."
+
+  deploy:
+    name: "Deploy"
+    needs: approve
+    runs-on: [self-hosted, linux]
+    environment: prod
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Deploy to prod stamps"
+        run: |
+          for N in ${{ env.PROD_STAMPS }}; do
+            KV="kv-wkld-${N}-prod"
+            echo "Triggering deploy webhook for stamp ${N} (${KV})..."
+            WEBHOOK=$(az keyvault secret show \
+              --vault-name "$KV" \
+              --name deploy-webhook-url \
+              --query value \
+              --output tsv)
+            curl --silent --show-error --fail --max-time 30 -X POST "$WEBHOOK"
+            echo "Stamp ${N}: webhook accepted."
+          done
+
+      - name: "Deploy summary"
+        if: always()
+        run: |
+          {
+            echo "## App Deploy — production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_REPO }}:latest\` |"
+            echo "| Stamps | \`${{ env.PROD_STAMPS }}\` |"
+            echo "| Deployed by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"

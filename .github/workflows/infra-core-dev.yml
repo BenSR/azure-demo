@@ -1,0 +1,82 @@
+name: "Infra — Core — Dev Plan"
+
+# Runs on merge to dev. Produces a plan against live state.
+# Core has no dev workspace — plan-only, never auto-applied.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "terraform/phase1/core/**"
+      - "terraform/modules/**"
+      - ".github/workflows/infra-core-dev.yml"
+
+concurrency:
+  group: "infra-core-dev"
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_ROOT: "terraform/phase1/core"
+  ARM_USE_OIDC: "true"
+  TF_VERSION: "~1.7"
+
+jobs:
+  plan:
+    name: "Plan"
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase1-core.tfstate"
+
+      - name: "Terraform plan"
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
+            -var="runner_registration_token=${{ secrets.GITHUB_RUNNER_REGISTRATION_TOKEN }}" \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## Core Plan — \`dev\`"
+            echo ""
+            echo "> [!NOTE]"
+            echo "> Plan only — core is never auto-deployed. Merge to \`main\` to apply."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

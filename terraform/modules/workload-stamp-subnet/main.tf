@@ -18,12 +18,6 @@ locals {
   asp_subnet_name = "snet-stamp-${local.stamp_id}-asp"
 
   network_watcher_name = coalesce(var.network_watcher_name, "NetworkWatcher_${var.location}")
-
-  flow_logs_enabled = (
-    var.log_analytics_workspace_id != null &&
-    var.log_analytics_workspace_guid != null &&
-    var.flow_log_storage_account_id != null
-  )
 }
 
 # ─── Subnets ──────────────────────────────────────────────────────────────────
@@ -81,7 +75,7 @@ resource "azurerm_subnet_network_security_group_association" "asp" {
 # ─── NSG Flow Logs ────────────────────────────────────────────────────────────
 
 resource "azurerm_network_watcher_flow_log" "pe" {
-  count = local.flow_logs_enabled ? 1 : 0
+  count = var.flow_logs_enabled ? 1 : 0
 
   name                      = "fl-${var.nsg_name_prefix}-stamp-${local.stamp_id}-pe"
   network_watcher_name      = local.network_watcher_name
@@ -107,7 +101,7 @@ resource "azurerm_network_watcher_flow_log" "pe" {
 }
 
 resource "azurerm_network_watcher_flow_log" "asp" {
-  count = local.flow_logs_enabled ? 1 : 0
+  count = var.flow_logs_enabled ? 1 : 0
 
   name                      = "fl-${var.nsg_name_prefix}-stamp-${local.stamp_id}-asp"
   network_watcher_name      = local.network_watcher_name
