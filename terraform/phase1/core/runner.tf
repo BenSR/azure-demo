@@ -85,59 +85,59 @@ resource "azurerm_linux_virtual_machine" "runner" {
   #   3. Exchange runner_github_pat for a short-lived registration token
   #   4. Register and start the runner as a systemd service
   custom_data = base64encode(<<-INIT
-    #!/bin/bash
-    set -euo pipefail
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq ca-certificates curl gnupg lsb-release git jq unzip
+  #!/bin/bash
+  set -euo pipefail
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg lsb-release git jq unzip
 
-    # ── Docker Engine (official repo) ──────────────────────────────────────────
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-      https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-      > /etc/apt/sources.list.d/docker.list
-    apt-get update -qq
-    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+  # ── Docker Engine (official repo) ──────────────────────────────────────────
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 
-    # ── Azure CLI ──────────────────────────────────────────────────────────────
-    curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
+  # ── Azure CLI ──────────────────────────────────────────────────────────────
+  curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
 
-    # Allow the runner admin user to run Docker without sudo
-    usermod -aG docker ${var.runner_admin_username}
+  # Allow the runner admin user to run Docker without sudo
+  usermod -aG docker ${var.runner_admin_username}
 
-    # ── GitHub Actions runner v2.331.0 ─────────────────────────────────────────
-    RUNNER_VERSION="2.331.0"
-    RUNNER_HASH="5fcc01bd546ba5c3f1291c2803658ebd3cedb3836489eda3be357d41bfcf28a7"
-    RUNNER_HOME="/home/${var.runner_admin_username}/actions-runner"
-    RUNNER_USER="${var.runner_admin_username}"
+  # ── GitHub Actions runner v2.331.0 ─────────────────────────────────────────
+  RUNNER_VERSION="2.331.0"
+  RUNNER_HASH="5fcc01bd546ba5c3f1291c2803658ebd3cedb3836489eda3be357d41bfcf28a7"
+  RUNNER_HOME="/home/${var.runner_admin_username}/actions-runner"
+  RUNNER_USER="${var.runner_admin_username}"
 
-    mkdir -p "$RUNNER_HOME"
-    curl -fsSL -o "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
-      "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
-    echo "$RUNNER_HASH  $RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
-      | shasum -a 256 -c
-    tar xzf "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" -C "$RUNNER_HOME"
-    chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME"
+  mkdir -p "$RUNNER_HOME"
+  curl -fsSL -o "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
+    "https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz"
+  echo "$RUNNER_HASH  $RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" \
+    | shasum -a 256 -c
+  tar xzf "$RUNNER_HOME/actions-runner-linux-x64-$RUNNER_VERSION.tar.gz" -C "$RUNNER_HOME"
+  chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME"
 
-    # Configure the runner as the runner user (config.sh must not run as root).
-    # Registration token is passed in from the runner_registration_token variable
-    # (sourced from the GITHUB_RUNNER_REGISTRATION_TOKEN GitHub secret in CI).
-    sudo -u "$RUNNER_USER" bash -c "
-      '$RUNNER_HOME/config.sh' \
-        --url 'https://github.com/BenSR/azure-demo' \
-        --token '${var.runner_registration_token}' \
-        --name 'azure-self-hosted' \
-        --labels 'self-hosted,linux' \
-        --unattended \
-        --replace
-    "
+  # Configure the runner as the runner user (config.sh must not run as root).
+  # Registration token is passed in from the runner_registration_token variable
+  # (sourced from the GITHUB_RUNNER_REGISTRATION_TOKEN GitHub secret in CI).
+  sudo -u "$RUNNER_USER" bash -c "
+    '$RUNNER_HOME/config.sh' \
+      --url 'https://github.com/BenSR/azure-demo' \
+      --token '${var.runner_registration_token}' \
+      --name 'azure-self-hosted' \
+      --labels 'self-hosted,linux' \
+      --unattended \
+      --replace
+  "
 
-    # Install as a systemd service and start it
-    "$RUNNER_HOME/svc.sh" install "$RUNNER_USER"
-    "$RUNNER_HOME/svc.sh" start
+  # Install as a systemd service and start it
+  "$RUNNER_HOME/svc.sh" install "$RUNNER_USER"
+  "$RUNNER_HOME/svc.sh" start
   INIT
   )
 
