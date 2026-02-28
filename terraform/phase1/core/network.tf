@@ -65,7 +65,6 @@ module "vnet" {
       name             = "snet-runner"
       address_prefixes = [local.subnet_cidrs.runner]
       delegation       = "GitHub.Network/networkSettings"
-      nat_gateway_id   = azurerm_nat_gateway.this.id
     },
     {
       name             = "snet-jumpbox"
@@ -73,10 +72,26 @@ module "vnet" {
     },
   ]
 
-  # Link all 7 Private DNS zones so every subnet resolves PE FQDNs.
-  private_dns_zone_ids = module.private_dns.all_zone_ids
+  # All subnets share the same NAT Gateway for deterministic egress.
+  attach_nat_gateway = true
+  nat_gateway_id     = azurerm_nat_gateway.this.id
 
-  # NSG flow logs — enabled once Log Analytics and diagnostic storage exist.
+  # Link all 7 Private DNS zones so every subnet resolves PE FQDNs.
+  # Keys are static zone name literals (known at plan time); values are the
+  # zone resource IDs (apply-time). This avoids the Terraform for_each
+  # limitation where set/map keys must be known before apply.
+  private_dns_zones = {
+    "privatelink.vaultcore.azure.net"    = module.private_dns.key_vault_zone_id
+    "privatelink.blob.core.windows.net"  = module.private_dns.blob_storage_zone_id
+    "privatelink.file.core.windows.net"  = module.private_dns.file_storage_zone_id
+    "privatelink.table.core.windows.net" = module.private_dns.table_storage_zone_id
+    "privatelink.queue.core.windows.net" = module.private_dns.queue_storage_zone_id
+    "privatelink.azurecr.io"             = module.private_dns.acr_zone_id
+    "privatelink.azurewebsites.net"      = module.private_dns.websites_zone_id
+  }
+
+  # NSG flow logs.
+  flow_logs_enabled            = true
   log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
   log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
   flow_log_storage_account_id  = azurerm_storage_account.diag.id
@@ -124,6 +139,7 @@ module "workload_stamp_subnet" {
     jumpbox   = module.vnet.nsg_names["snet-jumpbox"]
   }
 
+  flow_logs_enabled            = true
   log_analytics_workspace_id   = azurerm_log_analytics_workspace.this.id
   log_analytics_workspace_guid = azurerm_log_analytics_workspace.this.workspace_id
   flow_log_storage_account_id  = azurerm_storage_account.diag.id
