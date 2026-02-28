@@ -413,12 +413,18 @@ assign_directory_reader() {
     success "Service Principal already has Directory Readers — skipping."
   else
     info "Assigning Directory Readers to SP ${SP_OBJECT_ID} ..."
-    az rest \
+    local add_output
+    if add_output=$(az rest \
       --method POST \
       --uri "https://graph.microsoft.com/v1.0/directoryRoles/${role_object_id}/members/\$ref" \
       --body "{\"@odata.id\": \"https://graph.microsoft.com/v1.0/directoryObjects/${SP_OBJECT_ID}\"}" \
-      --output none
-    success "Assigned Directory Readers to the deployment Service Principal."
+      --output none 2>&1); then
+      success "Assigned Directory Readers to the deployment Service Principal."
+    elif echo "$add_output" | grep -q "already exist"; then
+      success "Service Principal already has Directory Readers — skipping."
+    else
+      die "Failed to assign Directory Readers: ${add_output}"
+    fi
   fi
 }
 
