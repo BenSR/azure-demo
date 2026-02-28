@@ -51,4 +51,4 @@ api_operations = [
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
-alert_email_receivers = ["platform@example.com"]
+alert_email_receivers = ["ben@advancinganalytics.co.uk"]
