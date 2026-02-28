@@ -29,8 +29,8 @@ resource "azurerm_network_interface" "jumpbox" {
 }
 
 # ─── Jump box — random local admin password ───────────────────────────────────
-# The local admin password is generated randomly and stored in state.  It is
-# not expected to be used — Entra ID login is the primary access method.
+# A complex password is generated here and stored in Terraform state.
+# Retrieve it with: terraform output -raw jumpbox_admin_password
 
 resource "random_password" "jumpbox" {
   length           = 24
@@ -40,8 +40,7 @@ resource "random_password" "jumpbox" {
 
 # ─── Jump box — Windows 11 VM ─────────────────────────────────────────────────
 # Standard_B2s: burstable, low-cost — appropriate for occasional admin use.
-# Entra ID (AAD) login is enabled via the extension below; local credentials
-# are randomized and are not usable
+# RDP using the local admin account; retrieve the password from TF outputs.
 
 resource "azurerm_windows_virtual_machine" "jumpbox" {
   name                = "vm-jumpbox-${local.name_suffix}"
@@ -66,30 +65,7 @@ resource "azurerm_windows_virtual_machine" "jumpbox" {
     version   = "latest"
   }
 
-  # Required for the AADLoginForWindows extension.
-  identity {
-    type = "SystemAssigned"
-  }
-
-  # Ensure the VM agent is installed so extensions can run.
   provision_vm_agent = true
-
-  tags = local.tags
-}
-
-# ─── Jump box — Entra ID Login extension ──────────────────────────────────────
-# Allows administrators to RDP into the jump box using their Entra ID
-# (Azure AD) credentials instead of local accounts.
-# Users must be assigned the "Virtual Machine Administrator Login" or
-# "Virtual Machine User Login" role on the VM resource after provisioning.
-
-resource "azurerm_virtual_machine_extension" "aad_login" {
-  name                       = "AADLoginForWindows"
-  virtual_machine_id         = azurerm_windows_virtual_machine.jumpbox.id
-  publisher                  = "Microsoft.Azure.ActiveDirectory"
-  type                       = "AADLoginForWindows"
-  type_handler_version       = "2.0"
-  auto_upgrade_minor_version = true
 
   tags = local.tags
 }
