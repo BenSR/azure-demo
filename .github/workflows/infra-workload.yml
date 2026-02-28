@@ -92,10 +92,10 @@ jobs:
         uses: terraform-linters/setup-tflint@v4
 
       - name: "TFLint — init"
-        run: tflint --init --config=.tflint.hcl
+        run: tflint --init --config="$(pwd)/.tflint.hcl"
 
       - name: "TFLint — lint"
-        run: tflint --recursive --config=.tflint.hcl
+        run: tflint --recursive --config="$(pwd)/.tflint.hcl"
 
       - name: "terraform validate — phase1/env"
         # -backend=false skips backend auth; remote_state data sources are not
