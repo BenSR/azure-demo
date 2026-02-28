@@ -118,7 +118,7 @@ locals {
 
 resource "azurerm_storage_container" "scripts" {
   name                  = "scripts"
-  storage_account_id    = data.azurerm_storage_account.deploy.id
+  storage_account_name  = var.deploy_storage_account_name
   container_access_type = "private"
 }
 
