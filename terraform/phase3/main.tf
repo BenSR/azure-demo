@@ -90,9 +90,9 @@ locals {
   _client_cert_b64 = replace(
     replace(
       replace(trimspace(local.core.client_cert_pem),
-        "-----BEGIN CERTIFICATE-----", ""),
-      "-----END CERTIFICATE-----", ""),
-    "\n", "")
+      "-----BEGIN CERTIFICATE-----", ""),
+    "-----END CERTIFICATE-----", ""),
+  "\n", "")
 
   client_cert_thumbprint = upper(sha1(base64decode(local._client_cert_b64)))
 

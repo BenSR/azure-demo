@@ -7,16 +7,16 @@
 # reaches private Key Vault and APIM endpoints.
 #
 # ┌─────────────┬──────────────────────────────────────────────────────────────┐
-# │ Trigger          │ Behaviour                                               │
-# ├──────────────────┼─────────────────────────────────────────────────────────┤
-# │ Push → feature/* │ Lint + validate phase1/env and phase3 (public runner,   │
-# │                  │ no credentials)                                         │
-# │ PR → dev         │ Same as push to feature/*                               │
-# │ PR → main        │ Same as push to feature/*                               │
-# │ Push → dev  │ Auto plan+apply phase1/env (public runner, workspace=dev),   │
-# │             │ then auto plan+apply phase3 (VNet runner, workspace=dev)     │
-# │ Push → main │ Plan phase1/env + phase3 (parallel) → upload plans →        │
-# │             │ await approval → apply phase1/env → apply phase3             │
+# │ Trigger             │ Behaviour                                           │
+# ├─────────────────────┼─────────────────────────────────────────────────────┤
+# │ Push → feature/*    │ Lint + validate phase1/env and phase3               │
+# │                     │ (public runner, no credentials)                     │
+# │ PR → dev            │ Same as push to feature/*                           │
+# │ PR → main           │ Same as push to feature/*                           │
+# │ PR merge → dev      │ Auto plan+apply phase1/env (public runner,          │
+# │                     │ workspace=dev), then phase3 (VNet runner)           │
+# │ PR merge → main     │ Plan phase1/env + phase3 (parallel) → upload plans  │
+# │                     │ → await approval → apply phase1/env → apply phase3  │
 # └─────────────┴──────────────────────────────────────────────────────────────┘
 #
 # Required GitHub secrets (Settings → Secrets and variables → Actions):
@@ -70,9 +70,9 @@ env:
 
 jobs:
   # ── Lint & Validate ──────────────────────────────────────────────────────────
-  # Runs on every PR against dev or main. No Azure credentials required.
-  # Validates both phase1/env and phase3 so module changes are caught against
-  # all consumers in a single pass.
+  # Runs on feature branch pushes and on every PR targeting dev or main.
+  # No Azure credentials required. Validates both phase1/env and phase3 so
+  # module changes are caught against all consumers in a single pass.
   validate:
     name: "Lint & Validate"
     runs-on: ubuntu-latest

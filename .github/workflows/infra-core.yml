@@ -6,13 +6,13 @@
 # Core is deployed ONCE — no workspaces, no dev/prod split.
 #
 # ┌─────────────┬──────────────────────────────────────────────────────────┐
-# │ Trigger          │ Behaviour                                           │
-# ├──────────────────┼─────────────────────────────────────────────────────┤
-# │ Push → feature/* │ Lint + validate (public runner, no credentials)     │
-# │ PR → dev         │ Lint + validate (public runner, no credentials)     │
-# │ PR → main        │ Lint + validate (public runner, no credentials)     │
-# │ Push → dev       │ Plan only — core has no dev workspace; no auto-apply│
-# │ Push → main      │ Plan → upload plan → await approval → apply         │
+# │ Trigger             │ Behaviour                                        │
+# ├─────────────────────┼──────────────────────────────────────────────────┤
+# │ Push → feature/*    │ Lint + validate (public runner, no credentials)  │
+# │ PR → dev            │ Lint + validate (public runner, no credentials)  │
+# │ PR → main           │ Lint + validate (public runner, no credentials)  │
+# │ PR merge → dev      │ Plan only — core has no dev workspace            │
+# │ PR merge → main     │ Plan → upload plan → await approval → apply      │
 # └─────────────┴──────────────────────────────────────────────────────────┘
 #
 # Required GitHub secrets (Settings → Secrets and variables → Actions):
@@ -60,8 +60,8 @@ env:
 
 jobs:
   # ── Lint & Validate ──────────────────────────────────────────────────────────
-  # Runs on every PR. No Azure credentials required.
-  # Failures block the PR from merging.
+  # Runs on feature branch pushes and on every PR targeting dev or main.
+  # No Azure credentials required. Failures block the PR from merging.
   validate:
     name: "Lint & Validate"
     runs-on: ubuntu-latest
