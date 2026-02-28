@@ -13,11 +13,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Subscription / tenant ───────────────────────────────────────────────────
-# These values are also required as GitHub Actions secrets (ARM_SUBSCRIPTION_ID
-# and ARM_TENANT_ID) for OIDC authentication.
+# ARM_SUBSCRIPTION_ID and ARM_TENANT_ID are required as GitHub Actions secrets
+# for OIDC authentication — they are picked up automatically by the provider.
 
 subscription_id = "00000000-0000-0000-0000-000000000000"
-tenant_id       = "00000000-0000-0000-0000-000000000000"
 
 # ─── Placement ───────────────────────────────────────────────────────────────
 

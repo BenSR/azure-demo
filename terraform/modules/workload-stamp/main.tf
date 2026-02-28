@@ -1,3 +1,14 @@
+terraform {
+  required_version = ">= 1.7"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.110"
+    }
+  }
+}
+
 locals {
   stamp_prefix       = "${var.workload_name}-${var.stamp_number}-${var.environment}"
   stamp_prefix_clean = "${var.workload_name}${var.stamp_number}${var.environment}"

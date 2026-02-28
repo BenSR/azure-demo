@@ -5,11 +5,6 @@ variable "subscription_id" {
   description = "Azure Subscription ID. Set via ARM_SUBSCRIPTION_ID env var in CI."
 }
 
-variable "tenant_id" {
-  type        = string
-  description = "Azure Tenant (Directory) ID. Set via ARM_TENANT_ID env var in CI."
-}
-
 # ─── Placement ───────────────────────────────────────────────────────────────
 
 variable "location" {

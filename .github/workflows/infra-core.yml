@@ -133,7 +133,6 @@ jobs:
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
-            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
@@ -194,7 +193,6 @@ jobs:
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
-            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
             -out=/tmp/tfplan-core \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 

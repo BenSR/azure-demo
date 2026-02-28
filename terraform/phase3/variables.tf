@@ -12,11 +12,6 @@ variable "tenant_id" {
 
 # ─── Placement ───────────────────────────────────────────────────────────────
 
-variable "location" {
-  type        = string
-  description = "Primary Azure region (e.g. uksouth, eastus2). Must match the region used by phase1."
-}
-
 # ─── Remote state ────────────────────────────────────────────────────────────
 
 variable "state_storage_account_name" {
