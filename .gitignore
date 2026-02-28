@@ -10,7 +10,7 @@ build/
 *.whl
 .venv/
 venv/
-env/
+/env/
 
 # Terraform
 .terraform/
