@@ -7,8 +7,6 @@
 # all consumers (Function Apps, APIM, CI/CD SP).
 # Naming: kv-<workload>-<stamp_number>-<env> → e.g. kv-wkld-1-dev
 
-data "azurerm_client_config" "current" {}
-
 resource "azurerm_key_vault" "this" {
   name                       = "kv-${local.stamp_prefix}"
   resource_group_name        = var.resource_group_name

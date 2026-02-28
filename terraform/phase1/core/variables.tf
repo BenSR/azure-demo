@@ -5,11 +5,6 @@ variable "subscription_id" {
   description = "Azure Subscription ID. Set via ARM_SUBSCRIPTION_ID env var in CI."
 }
 
-variable "tenant_id" {
-  type        = string
-  description = "Azure Tenant (Directory) ID. Set via ARM_TENANT_ID env var in CI."
-}
-
 # ─── Placement ───────────────────────────────────────────────────────────────
 
 variable "location" {
@@ -62,4 +57,29 @@ variable "jumpbox_vm_size" {
   type        = string
   description = "VM size for the jump box."
   default     = "Standard_B2s"
+}
+
+# ─── Self-hosted runner ───────────────────────────────────────────────────────
+
+variable "runner_admin_username" {
+  type        = string
+  description = "Local administrator username for the runner VM."
+  default     = "runneradmin"
+}
+
+variable "runner_vm_size" {
+  type        = string
+  description = "VM size for the self-hosted runner."
+  default     = "Standard_B2s"
+}
+
+variable "runner_admin_upn" {
+  type        = string
+  description = "UPN of the Entra ID user to grant 'Virtual Machine Administrator Login' on the runner VM (e.g. user@example.com). Allows SSH via 'az ssh vm'."
+}
+
+variable "runner_registration_token" {
+  type        = string
+  sensitive   = true
+  description = "GitHub Actions runner registration token (obtained from the GitHub portal or API). Used at VM first boot to register the runner. Pass via RUNNER_REGISTRATION_TOKEN GitHub secret — never store in tfvars."
 }

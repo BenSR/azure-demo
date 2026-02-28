@@ -73,6 +73,12 @@ variable "shared_nsg_names" {
 
 # ─── Flow logs ────────────────────────────────────────────────────────────────
 
+variable "flow_logs_enabled" {
+  type        = bool
+  default     = false
+  description = "When true, NSG flow logs with Traffic Analytics are created for the pe and asp NSGs. Requires log_analytics_workspace_id, log_analytics_workspace_guid, and flow_log_storage_account_id to be set."
+}
+
 variable "log_analytics_workspace_id" {
   type        = string
   default     = null

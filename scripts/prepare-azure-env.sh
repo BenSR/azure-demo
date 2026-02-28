@@ -11,7 +11,9 @@
 #   4. Create an App Registration / Service Principal for GitHub Actions.
 #   5. Add OIDC federated credentials for each GitHub Actions environment.
 #   6. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
-#   7. Print the GitHub Actions secrets that need to be configured.
+#   7. Assign the Entra ID "Directory Readers" role so Terraform can resolve
+#      users and groups via the azuread provider.
+#   8. Print the GitHub Actions secrets that need to be configured.
 #
 # Usage:
 #   bash scripts/prepare-azure-env.sh [OPTIONS]
@@ -367,6 +369,59 @@ assign_roles() {
   fi
 }
 
+# ─── Entra ID Directory Readers role ──────────────────────────────────────────
+# Terraform's azuread provider needs directory read access to resolve users,
+# groups, and service principals (data sources such as azuread_user,
+# azuread_group, etc.).  "Directory Readers" is a built-in Entra ID directory
+# role (roleTemplateId 88d8e3e3-8f55-4a1e-953a-9b9898b8876b).
+assign_directory_reader() {
+  header "Entra ID — Directory Readers role"
+
+  local role_template_id="88d8e3e3-8f55-4a1e-953a-9b9898b8876b"
+
+  # Activate the directory role if it hasn't been used before.
+  # (Entra ID built-in roles must be activated before members can be added.)
+  local role_object_id
+  role_object_id=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/directoryRoles?\$filter=roleTemplateId eq '${role_template_id}'" \
+    --query "value[0].id" \
+    --output tsv 2>/dev/null || true)
+
+  if [[ -z "$role_object_id" || "$role_object_id" == "None" ]]; then
+    info "Activating Directory Readers role ..."
+    role_object_id=$(az rest \
+      --method POST \
+      --uri "https://graph.microsoft.com/v1.0/directoryRoles" \
+      --body "{\"roleTemplateId\": \"${role_template_id}\"}" \
+      --query "id" \
+      --output tsv)
+    success "Activated Directory Readers role (objectId: ${role_object_id})"
+  else
+    success "Directory Readers role already activated (objectId: ${role_object_id})"
+  fi
+
+  # Check whether the SP is already a member.
+  local already_member
+  already_member=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/directoryRoles/${role_object_id}/members" \
+    --query "value[?id=='${SP_OBJECT_ID}'].id | [0]" \
+    --output tsv 2>/dev/null || true)
+
+  if [[ -n "$already_member" && "$already_member" != "None" ]]; then
+    success "Service Principal already has Directory Readers — skipping."
+  else
+    info "Assigning Directory Readers to SP ${SP_OBJECT_ID} ..."
+    az rest \
+      --method POST \
+      --uri "https://graph.microsoft.com/v1.0/directoryRoles/${role_object_id}/members/\$ref" \
+      --body "{\"@odata.id\": \"https://graph.microsoft.com/v1.0/directoryObjects/${SP_OBJECT_ID}\"}" \
+      --output none
+    success "Assigned Directory Readers to the deployment Service Principal."
+  fi
+}
+
 # ─── Print summary ────────────────────────────────────────────────────────────
 print_summary() {
   header "Summary"
@@ -438,6 +493,7 @@ main() {
   create_service_principal
   add_federated_credentials
   assign_roles
+  assign_directory_reader
   print_summary
 
   success "Bootstrap complete."

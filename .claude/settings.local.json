@@ -4,7 +4,8 @@
       "Bash(/workspaces/azure-demo/terraform/phase1/outputs.tf:*)",
       "Bash(az account show)",
       "Bash(chmod +x /workspaces/azure-demo/scripts/prepare-azure-env.sh)",
-      "Bash(bash -n /workspaces/azure-demo/scripts/prepare-azure-env.sh)"
+      "Bash(bash -n /workspaces/azure-demo/scripts/prepare-azure-env.sh)",
+      "Bash(wc -l /workspaces/azure-demo/terraform/phase1/core/*.tf /workspaces/azure-demo/terraform/modules/*/*.tf /workspaces/azure-demo/terraform/phase1/env/*.tf)"
     ]
   }
 }

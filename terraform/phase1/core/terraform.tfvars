@@ -13,11 +13,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Subscription / tenant ───────────────────────────────────────────────────
-# These values are also required as GitHub Actions secrets (ARM_SUBSCRIPTION_ID
-# and ARM_TENANT_ID) for OIDC authentication.
+# ARM_SUBSCRIPTION_ID and ARM_TENANT_ID are required as GitHub Actions secrets
+# for OIDC authentication — they are picked up automatically by the provider.
 
 subscription_id = "00000000-0000-0000-0000-000000000000"
-tenant_id       = "00000000-0000-0000-0000-000000000000"
 
 # ─── Placement ───────────────────────────────────────────────────────────────
 
@@ -26,6 +25,13 @@ location = "uksouth"
 # ─── Jump box ─────────────────────────────────────────────────────────────────
 
 jumpbox_vm_size = "Standard_B2s"
+
+# ─── Self-hosted runner ────────────────────────────────────────────────────────
+# runner_admin_upn: the Entra ID user who receives "Virtual Machine Administrator
+# Login" on the runner VM, enabling SSH via `az ssh vm` from the jumpbox.
+
+runner_vm_size   = "Standard_B2s"
+runner_admin_upn = "ben.somerville.roberts_outlook.com#EXT#@bensomervillerobertsoutlook.onmicrosoft.com"
 
 # ─── Stamp subnets ────────────────────────────────────────────────────────────
 # Each stamp gets a PE subnet (Private Endpoints) and an ASP subnet (App

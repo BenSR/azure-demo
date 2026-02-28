@@ -10,7 +10,7 @@ Detailed network topology, subnet layout, NAT Gateway configuration, and per-sub
 |-----------|---------------|
 | **Zero public internet exposure** | All PaaS services behind Private Endpoints. APIM in internal VNet mode. Function App `public_network_access_enabled = false`. |
 | **Least-privilege NSG rules** | One NSG per subnet. Explicit deny-all as the final custom rule; allow only the minimum traffic each subnet requires. |
-| **Deterministic egress** | NAT Gateway with a static Public IP attached **only** to the GitHub Runner subnet — the sole subnet that requires internet access. |
+| **Deterministic egress** | NAT Gateway with a static Public IP attached to the runner subnet — the sole subnet whose NSG permits internet egress. All other subnets have `DenyAllOutbound` at NSG level. |
 | **Private DNS resolution** | Azure Private DNS Zones linked to the VNet. All subnets resolve private endpoint FQDNs via Azure DNS (`168.63.129.16`). |
 | **Private Endpoint Network Policies** | Enabled on PE subnets (`private_endpoint_network_policies = "Enabled"`) so that NSG rules apply to Private Endpoint traffic. |
 
@@ -43,7 +43,7 @@ Subnets are divided into **fixed** (one per VNet, created by `modules/vnet`) and
 
 | Subnet Name | CIDR | Usable IPs | Delegation | Purpose | NAT Gateway |
 |-------------|------|------------|------------|---------|-------------|
-| `snet-runner` | `10.100.128.0/24` | 251 | `GitHub.Network/networkSettings` | GitHub Actions VNet-injected runner | **Yes** |
+| `snet-runner` | `10.100.128.0/24` | 251 | None | Self-hosted GitHub Actions runner VM (`vm-runner-core`) | **Yes** |
 | `snet-jumpbox` | `10.100.129.0/27` | 27 | None | Windows 11 jump box for developer connectivity and diagnostics | No |
 | `snet-apim` | `10.100.129.32/27` | 27 | `Microsoft.ApiManagement/service` | API Management (internal VNet mode, Developer tier) | No |
 | `snet-shared-pe` | `10.100.130.0/24` | 251 | None | Private Endpoints for shared resources (ACR PE only) | No |
@@ -71,14 +71,14 @@ Stamp subnets occupy the lower address range of `10.100.0.0/16`. Subnet names in
 - **PE subnets** (`snet-stamp-<N>-pe`, `snet-shared-pe`): `private_endpoint_network_policies = "Enabled"` to allow NSG enforcement on Private Endpoint NICs.
 - **ASP subnets** (`snet-stamp-<N>-asp`): Delegation to `Microsoft.Web/serverFarms` is mandatory for App Service VNet integration. Function App **outbound** traffic originates from this subnet; **inbound** traffic arrives at the Function App's Private Endpoint in the stamp PE subnet.
 - **APIM subnet** (`snet-apim`): Delegation to `Microsoft.ApiManagement/service` is mandatory. `/27` is the recommended minimum for Developer tier.
-- **Runner subnet** (`snet-runner`): Delegation to `GitHub.Network/networkSettings` is required for GitHub-managed VNet-injected runners.
+- **Runner subnet** (`snet-runner`): No delegation. Hosts `vm-runner-core`, the self-hosted GitHub Actions runner VM. Entra ID SSH login via `AADSSHLoginForLinux` extension; inbound SSH is permitted from `snet-jumpbox` only. The runner agent is registered with GitHub manually after VM provisioning.
 - **Jump box subnet** (`snet-jumpbox`): No delegation. Hosts a single Windows 11 VM with a public IP for RDP access. Entra ID authentication via the `AADLoginForWindows` VM extension. `/27` is sufficient — only one VM is expected.
 
 ---
 
 ## 4. NAT Gateway
 
-The GitHub Runner is the **only** component that requires egress to the public internet (for GitHub Actions communication, package downloads, Azure Resource Manager API calls via Terraform, and `az acr login`). All other subnets have internet-bound outbound traffic denied at the NSG level.
+The self-hosted runner VM (`vm-runner-core`) is the **only** component that requires egress to the public internet (for GitHub Actions communication, package downloads, Azure Resource Manager API calls via Terraform, and `az acr login`). All other subnets have internet-bound outbound traffic denied at the NSG level.
 
 | Attribute | Value |
 |-----------|-------|
@@ -95,7 +95,7 @@ The GitHub Runner is the **only** component that requires egress to the public i
 | `snet-stamp-1-asp` | No | Function App communicates exclusively with Private Endpoints (Storage, ACR, Key Vault) and Azure Monitor via service tag. No internet dependency. |
 | `snet-apim` | No | APIM internal mode. Required outbound dependencies (Storage, SQL, Key Vault, Event Hub, Azure Monitor) are reached via Azure service tags, not internet routes. |
 | `snet-shared-pe` | No | Private Endpoints are inbound-only listeners. |
-| `snet-runner` | **Yes** | GitHub Actions orchestration, pulling packages (pip, apt), Azure ARM API (Terraform apply), Docker build tooling. |
+| `snet-runner` | **Yes** | GitHub Actions runner agent polling, pulling packages (pip/apt), Azure ARM API (Terraform), Docker build and push to ACR. |
 | `snet-jumpbox` | No | Jump box connects to internal resources only. Inbound RDP from internet; outbound to PE subnets within the VNet. No general internet egress required. |
 
 ---
@@ -311,15 +311,16 @@ APIM in internal VNet mode has **mandatory NSG requirements** documented by Micr
 ### 6.5 NSG: `nsg-core-runner`
 
 **Attached to:** `snet-runner` (`10.100.128.0/24`)
-**Hosted resources:** GitHub Actions VNet-injected runner
+**Hosted resources:** `vm-runner-core` — Ubuntu 22.04 self-hosted GitHub Actions runner VM
 
-The runner is the **only** resource with internet egress. It requires outbound connectivity for GitHub Actions orchestration, package installation, Azure Resource Manager API (Terraform), and Docker image builds.
+The runner is the **only** resource with internet egress. It requires outbound connectivity for GitHub Actions agent polling, package installation, Azure Resource Manager API (Terraform), and Docker image builds and pushes.
 
 #### Inbound Rules
 
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | The runner initiates all connections; no inbound traffic is expected. |
+| 100 | AllowSSHFromJumpbox | `10.100.129.0/27` | `*` | 22 | TCP | **Allow** | SSH from jump box for runner VM management. Use `az ssh vm` with Entra ID credentials from the jump box. |
+| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | All other inbound traffic denied. |
 
 #### Outbound Rules
 
@@ -367,11 +368,11 @@ The following table maps the user's stated network constraints to the specific N
 
 | Constraint | How Enforced |
 |------------|-------------|
-| **Only the GitHub Runner gets internet egress** | NAT Gateway attached only to `snet-runner`. All other subnets have `DenyAllOutbound` at priority 4096 with no preceding internet-bound allow rules. The runner's NSG has explicit `AllowToInternetHTTPS` (120) and `AllowToInternetHTTP` (130). |
-| **Function App callable only via APIM** | `snet-stamp-1-pe` inbound rule 100 allows only `10.155.2.0/27` (APIM subnet) on port 443 to reach the Function App PE. No other subnet has a rule permitting traffic to the Function App PE. The ASP and runner rules against `snet-stamp-1-pe` target Storage PEs, not the Function App PE — but since NSGs operate at subnet level, this is a pragmatic trade-off documented in section 8. |
-| **ACR reachable from both Runner and Function App** | `snet-shared-pe` inbound rules 100 and 110 allow traffic from `snet-stamp-1-asp` (Function App) and `snet-runner` (GitHub Runner) respectively. Corresponding outbound rules on those source subnets permit egress to `10.155.7.0/24`. |
+| **Only the self-hosted runner gets internet egress** | NAT Gateway attached to `snet-runner`. All other subnets have `DenyAllOutbound` at priority 4096 with no preceding internet-bound allow rules. The runner NSG has explicit `AllowToInternetHTTPS` (120) and `AllowToInternetHTTP` (130). |
+| **Function App callable only via APIM** | `snet-stamp-1-pe` inbound rule 100 allows only `10.100.129.32/27` (APIM subnet) on port 443 to reach the Function App PE. No other subnet has a rule permitting traffic to the Function App PE. The ASP and runner rules against `snet-stamp-1-pe` target Storage PEs, not the Function App PE — but since NSGs operate at subnet level, this is a pragmatic trade-off documented in section 8. |
+| **ACR reachable from both Runner and Function App** | `snet-shared-pe` inbound rules 100 and 110 allow traffic from `snet-stamp-1-asp` (Function App) and `snet-runner` (self-hosted runner) respectively. Corresponding outbound rules on those source subnets permit egress to `10.100.130.0/24`. |
 | **Key Vault reachable from Function App, APIM, and Runner** | Key Vault is per-stamp in `snet-stamp-<N>-pe`. The existing `snet-stamp-1-pe` inbound rules (110 for ASP, 100 for APIM, 120 for runner, 130 for jumpbox) already cover this — no additional rules needed. KV PE shares the subnet with Function App and Storage PEs. |
-| **Jump box can reach all internal resources** | `snet-jumpbox` outbound rules 100–120 allow HTTPS to stamp PE (covering KV, Function App, Storage PEs), shared PE (ACR), and APIM subnets. Corresponding inbound rules on `snet-stamp-1-pe` (130), `snet-shared-pe` (120), and `snet-apim` allow traffic from `10.155.5.0/27`. Jump box has **no internet egress** — only inbound RDP and outbound to VNet resources. |
+| **Jump box can reach all internal resources** | `snet-jumpbox` outbound rules 100–120 allow HTTPS to stamp PE (covering KV, Function App, Storage PEs), shared PE (ACR), and APIM subnets. Corresponding inbound rules on `snet-stamp-1-pe` (130), `snet-shared-pe` (120), and `snet-apim` allow traffic from `10.100.129.0/27`. Jump box has **no internet egress** — only inbound RDP and outbound to VNet resources. |
 
 ---
 
@@ -447,6 +448,8 @@ NSG names are derived from the VNet name via `replace(vnet_name, "vnet-", "nsg-"
 | Jump Box VM | `vm-jumpbox-core` | `vm-jumpbox-core` |
 | Jump Box NIC | `nic-jumpbox-core` | `nic-jumpbox-core` |
 | Jump Box Public IP | `pip-jumpbox-core` | `pip-jumpbox-core` |
+| Runner VM | `vm-runner-core` | `vm-runner-core` |
+| Runner NIC | `nic-runner-core` | `nic-runner-core` |
 
 ---
 

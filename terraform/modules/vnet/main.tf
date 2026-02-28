@@ -5,13 +5,6 @@ locals {
 
   # Use the Azure-managed Network Watcher naming convention when not explicitly overridden.
   network_watcher_name = coalesce(var.network_watcher_name, "NetworkWatcher_${var.location}")
-
-  # Flow logs require all three inputs to be present.
-  flow_logs_enabled = (
-    var.log_analytics_workspace_id != null &&
-    var.log_analytics_workspace_guid != null &&
-    var.flow_log_storage_account_id != null
-  )
 }
 
 # ─── Virtual Network ──────────────────────────────────────────────────────────
@@ -73,34 +66,35 @@ resource "azurerm_subnet_network_security_group_association" "this" {
 }
 
 # ─── NAT Gateway → Subnet associations ───────────────────────────────────────
-# Only subnets with a nat_gateway_id set receive an association.
+# When attach_nat_gateway is true, every subnet is associated with var.nat_gateway_id.
+# The static bool (known at plan time) gates the for_each so Terraform can determine
+# the full set of resource instances during plan, even though nat_gateway_id itself
+# is an apply-time value.
 
 resource "azurerm_subnet_nat_gateway_association" "this" {
-  for_each = {
-    for s in var.subnets : s.name => s
-    if s.nat_gateway_id != null
-  }
+  for_each = var.attach_nat_gateway ? { for s in var.subnets : s.name => s } : {}
 
   subnet_id      = azurerm_subnet.this[each.key].id
-  nat_gateway_id = each.value.nat_gateway_id
+  nat_gateway_id = var.nat_gateway_id
 }
 
 # ─── Private DNS Zone VNet Links ─────────────────────────────────────────────
-# Links every supplied zone ID to this VNet so all subnets resolve Private
+# Links every supplied zone to this VNet so all subnets resolve Private
 # Endpoint FQDNs via Azure DNS (168.63.129.16).
+#
+# var.private_dns_zones is a map(zone_name => zone_resource_id). The zone NAME
+# is used as the for_each key (a static string literal, known at plan time).
+# The zone resource ID is the value — an apply-time reference — which Terraform
+# is allowed to leave unknown when computing the plan, because only keys need to
+# be known up-front.  Using toset(list_of_ids) would make the IDs the keys,
+# which fails during a first-time deploy when the IDs are not yet known.
 
 resource "azurerm_private_dns_zone_virtual_network_link" "this" {
-  for_each = toset(var.private_dns_zone_ids)
+  for_each = var.private_dns_zones # map(zone_name => zone_id); keys are static
 
-  # The zone name is the final segment of the resource ID.
-  # Replace dots with dashes to produce a valid Azure resource name.
-  name = "link-${azurerm_virtual_network.this.name}-${replace(
-    element(split("/", each.value), length(split("/", each.value)) - 1),
-    ".", "-"
-  )}"
-
+  name                  = "link-${azurerm_virtual_network.this.name}-${replace(each.key, ".", "-")}"
   resource_group_name   = var.resource_group_name
-  private_dns_zone_name = element(split("/", each.value), length(split("/", each.value)) - 1)
+  private_dns_zone_name = each.key
   virtual_network_id    = azurerm_virtual_network.this.id
   registration_enabled  = false
   tags                  = var.tags
@@ -112,7 +106,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "this" {
 # region (Azure auto-creates NetworkWatcher_{location} in NetworkWatcherRG).
 
 resource "azurerm_network_watcher_flow_log" "this" {
-  for_each = local.flow_logs_enabled ? { for s in var.subnets : s.name => s } : {}
+  for_each = var.flow_logs_enabled ? { for s in var.subnets : s.name => s } : {}
 
   name                      = "fl-${local.nsg_name_prefix}-${replace(each.value.name, "snet-", "")}"
   network_watcher_name      = local.network_watcher_name

@@ -90,3 +90,21 @@ output "resource_group_core" {
   value       = azurerm_resource_group.core.name
   description = "Core resource group name (VNet, ACR, Log Analytics, DNS, Jump Box)."
 }
+
+# ─── Self-hosted runner ────────────────────────────────────────────────────────
+
+output "runner_vm_id" {
+  value       = azurerm_linux_virtual_machine.runner.id
+  description = "Resource ID of the self-hosted runner VM."
+}
+
+output "runner_private_ip" {
+  value       = azurerm_network_interface.runner.private_ip_address
+  description = "Private IP of the runner VM (snet-runner). SSH from jumpbox: az ssh vm --name vm-runner-core --resource-group rg-core"
+}
+
+output "runner_ssh_private_key_pem" {
+  value       = tls_private_key.runner.private_key_pem
+  sensitive   = true
+  description = "Break-glass SSH private key for the runner VM local admin. Retrieve with: terraform output -raw runner_ssh_private_key_pem"
+}

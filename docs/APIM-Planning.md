@@ -2,8 +2,8 @@
 
 Configuration and design for the APIM API layer, mTLS termination, and APIM → Function App authentication.
 
-> See [2_app_planning.md](2_app_planning.md) for the Function App application design.
-> See [1_infra_solution_design.md](1_infra_solution_design.md) for APIM infrastructure (Developer tier, internal VNet mode).
+> See [Application Planning](Application-Planning) for the Function App application design.
+> See [Infrastructure Solution Design](Infrastructure-Solution-Design) for APIM infrastructure (Developer tier, internal VNet mode).
 
 ---
 

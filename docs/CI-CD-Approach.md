@@ -26,14 +26,18 @@ feature/xyz ──PR──► dev ──PR──► main
 
 ## 2. Runner Requirements
 
+Two runner types are used. GitHub-hosted runners handle everything that only needs Azure ARM API access (Terraform control plane, tests, linting). The self-hosted runner — a small Ubuntu VM (`vm-runner-core`) in `snet-runner` inside `vnet-core` — is used for any job that needs to reach private data-plane endpoints.
+
 | Job | Runner | Why |
 |-----|--------|-----|
-| Lint / validate / test | Public hosted | No Azure network access needed |
-| `phase1/core` plan + apply | Public hosted | Terraform control plane only |
-| `phase1/env` plan + apply | Public hosted | Terraform control plane only; KV data plane not accessed |
-| `phase3` plan + apply | **VNet runner** | Must reach private KV and APIM endpoints |
-| Docker build + push to ACR | **VNet runner** | ACR has `public_network_access_enabled = false` |
-| Webhook deploy | **VNet runner** | SCM endpoint only reachable from inside VNet |
+| Lint / validate / test | GitHub-hosted (`ubuntu-latest`) | No Azure network access needed |
+| `phase1/core` plan + apply | GitHub-hosted | Terraform ARM API only (no private endpoints) |
+| `phase1/env` plan + apply | GitHub-hosted | Terraform ARM API only; KV data plane not accessed |
+| `phase3` plan + apply | **Self-hosted** (`[self-hosted, linux]`) | Must reach private KV and APIM endpoints inside VNet |
+| Docker build + push to ACR | **Self-hosted** | ACR has `public_network_access_enabled = false` |
+| Webhook deploy | **Self-hosted** | Kudu SCM endpoint only reachable from inside VNet |
+
+The runner VM is registered with GitHub manually after Terraform provisioning (see [Infrastructure Implementation Planning](Infrastructure-Implementation-Planning)). It uses the label set `self-hosted,linux` by convention; update the workflow `runs-on` labels if you configure different labels during registration.
 
 ---
 
@@ -125,7 +129,7 @@ Merge to dev
   │     → terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
   │     → terraform apply tfplan
   │
-  └── phase3 (VNet runner — runs after phase1/env apply succeeds)
+  └── phase3 (self-hosted runner — runs after phase1/env apply succeeds)
         → terraform workspace select dev
         → terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
         → terraform apply tfplan
@@ -140,7 +144,7 @@ Prod changes require a reviewer to inspect the plan before anything is applied. 
 ```
 Merge to main
   │
-  ├── PLAN (public runner for phase1/env, VNet runner for phase3)
+  ├── PLAN (GitHub-hosted for phase1/env, self-hosted for phase3)
   │     → terraform workspace select prod
   │     → terraform -chdir=phase1/env plan \
   │           -var-file=terraform.tfvars -var-file=prod.tfvars \
@@ -164,7 +168,7 @@ Merge to main
   │     → Workflow pauses — reviewer inspects plan
   │     → Approves or rejects
   │
-  └── APPLY (public runner for phase1/env, VNet runner for phase3)
+  └── APPLY (GitHub-hosted for phase1/env, self-hosted for phase3)
         → az storage blob download "env-prod-${GITHUB_RUN_ID}.tfplan"
         → terraform -chdir=phase1/env apply tfplan-env-prod
         → (wait for phase1/env to complete)
@@ -188,26 +192,26 @@ Catches failures on every branch before anything reaches dev or prod.
 
 ```
 Push to any branch
-  ├── (public runner) Test
+  ├── (GitHub-hosted) Test
   │     → pip install -r requirements.txt
   │     → pytest tests/ -v --cov=core --cov=functions
   │     → (fail if coverage < 90%)
   │
-  └── (VNet runner) Build
+  └── (self-hosted) Build
         → docker build -t wkld-api:ci .
         → (image discarded — push step not run)
 ```
 
-The Docker build runs on the VNet runner because it will need ACR access in the push step; it's simpler to use the same runner for both. The build-only step validates the `Dockerfile` and layer structure without incurring a push.
+The Docker build runs on the self-hosted runner because it will need ACR access in the push step; using the same runner for both avoids environment differences between validate and real builds.
 
 ### Merge to `dev` — Test, Build, Push, Deploy
 
 ```
 Merge to dev
-  → (public runner) Test
+  → (GitHub-hosted) Test
       → pytest tests/ --cov ... (fail fast)
 
-  → (VNet runner) Build + push + deploy
+  → (self-hosted) Build + push + deploy
       → az acr login --name acrcore
       → docker build -t acrcore.azurecr.io/wkld-api:dev .
       → docker push acrcore.azurecr.io/wkld-api:dev
@@ -225,10 +229,10 @@ The image is pushed to ACR before the approval gate so the reviewer can inspect 
 ```
 Merge to main
   │
-  ├── (public runner) Test
+  ├── (GitHub-hosted) Test
   │     → pytest tests/ --cov ... (fail fast)
   │
-  ├── (VNet runner) Build + push
+  ├── (self-hosted) Build + push
   │     → az acr login --name acrcore
   │     → docker build -t acrcore.azurecr.io/wkld-api:latest .
   │     → docker push acrcore.azurecr.io/wkld-api:latest
@@ -238,7 +242,7 @@ Merge to main
   │     → Reviewer confirms image is ready to deploy
   │     → Approves or rejects
   │
-  └── (VNet runner) Deploy
+  └── (self-hosted) Deploy
         → WEBHOOK=$(az keyvault secret show \
               --vault-name kv-wkld-1-prod \
               --name deploy-webhook-url \

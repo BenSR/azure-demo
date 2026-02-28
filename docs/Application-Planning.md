@@ -2,7 +2,7 @@
 
 Design and implementation plan for the Python Azure Function App, packaged as a Docker container, deployed to the infrastructure defined in Phase 1.
 
-> See [2_apim_planning.md](2_apim_planning.md) for APIM configuration, mTLS, and APIM → Function App authentication.
+> See [APIM Planning](APIM-Planning) for APIM configuration, mTLS, and APIM → Function App authentication.
 
 ---
 
@@ -137,7 +137,7 @@ Health-check endpoint for App Insights availability tests and APIM health probes
 }
 ```
 
-No authentication required on the health endpoint — it returns no sensitive data and is used for infrastructure probing (excluded from EasyAuth — see [2_apim_planning.md](2_apim_planning.md)).
+No authentication required on the health endpoint — it returns no sensitive data and is used for infrastructure probing (excluded from EasyAuth — see [APIM Planning](APIM-Planning)).
 
 ---
 
@@ -276,7 +276,7 @@ Promotion from dev to prod is *merging the PR to main* — the main-branch pipel
 | Concern | Mitigation |
 |---------|------------|
 | **No public access** | `public_network_access_enabled = false` on the Function App. Only reachable via its Private Endpoint in `snet-stamp-<env>-<N>-pe`. |
-| **APIM → Function App auth** | APIM authenticates via Managed Identity + Entra ID tokens. Function App validates via EasyAuth. No shared secrets. See [2_apim_planning.md](2_apim_planning.md). |
+| **APIM → Function App auth** | APIM authenticates via Managed Identity + Entra ID tokens. Function App validates via EasyAuth. No shared secrets. See [APIM Planning](APIM-Planning). |
 | **mTLS enforcement** | Handled at the APIM layer. APIM policy validates client certs against the CA in Key Vault. |
 | **No secrets in code** | All secrets and certificates live in Key Vault. Function App accesses them via Managed Identity. |
 | **Managed Identity auth** | Function App uses its system-assigned MI for ACR pull, Storage access, and Key Vault reads. No connection strings or account keys. |
@@ -333,5 +333,5 @@ Additional settings that may be needed (passed via `function_apps[].app_settings
 | FR-5.4 — Audit logging | Structured logging with request_id. Requests excluded from sampling. |
 | FR-7.1 — Health monitoring | GET `/api/health` endpoint. |
 | NFR-1.3 — No secrets in code | Managed Identity for all service auth. No connection strings. |
-| FR-9.1 / NFR-1.7 — Managed Identities for service-to-service | See [2_apim_planning.md](2_apim_planning.md). |
+| FR-9.1 / NFR-1.7 — Managed Identities for service-to-service | See [APIM Planning](APIM-Planning). |
 | NFR-2.1 — Log all API requests | App Insights auto-collection (requests excluded from sampling). |

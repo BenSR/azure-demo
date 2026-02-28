@@ -26,10 +26,6 @@
 subscription_id = "00000000-0000-0000-0000-000000000000"
 tenant_id       = "00000000-0000-0000-0000-000000000000"
 
-# ─── Placement ───────────────────────────────────────────────────────────────
-
-location = "uksouth"
-
 # ─── Remote state ────────────────────────────────────────────────────────────
 
 state_storage_account_name = "<your-state-storage-account>"
@@ -55,4 +51,4 @@ api_operations = [
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
-alert_email_receivers = ["platform@example.com"]
+alert_email_receivers = ["ben.somerville.roberts_outlook.com#EXT#@bensomervillerobertsoutlook.onmicrosoft.com"]
