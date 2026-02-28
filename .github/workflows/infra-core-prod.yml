@@ -60,6 +60,7 @@ jobs:
 
       - name: "Terraform plan"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
@@ -150,6 +151,7 @@ jobs:
 
       - name: "Terraform apply"
         run: |
+          set -o pipefail
           terraform -chdir=${{ env.TF_ROOT }} apply \
             -no-color \
             /tmp/tfplan-core 2>&1 | tee /tmp/apply-output.txt

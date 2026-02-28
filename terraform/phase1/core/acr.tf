@@ -1,10 +1,11 @@
 # ─── Azure Container Registry ─────────────────────────────────────────────────
 # Premium SKU is required for Private Endpoint support.
 # Deployed once; shared across all environments.
-# Naming: acrcore
+# Naming: acr<name_suffix><8-char subscription hex prefix>
+#   e.g. acrcore09d0073b — globally unique per subscription, deterministic.
 
 resource "azurerm_container_registry" "this" {
-  name                = "acrcore"
+  name                = "acr${local.name_suffix}${substr(replace(var.subscription_id, "-", ""), 0, 8)}"
   resource_group_name = azurerm_resource_group.core.name
   location            = var.location
   sku                 = "Premium"
@@ -45,18 +46,3 @@ resource "azurerm_private_endpoint" "acr" {
   tags = local.tags
 }
 
-# ─── ACR — diagnostic settings ────────────────────────────────────────────────
-
-resource "azurerm_monitor_diagnostic_setting" "acr" {
-  name                       = "diag-acr-${local.name_suffix}"
-  target_resource_id         = azurerm_container_registry.this.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
-
-  enabled_log {
-    category = "ContainerRegistryRepositoryEvents"
-  }
-
-  enabled_log {
-    category = "ContainerRegistryLoginEvents"
-  }
-}
