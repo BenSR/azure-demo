@@ -65,7 +65,7 @@ jobs:
             -var-file=terraform.tfvars \
             -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
             -var="runner_management_pat=${{ secrets.RUNNER_MANAGEMENT_PAT }}" \
-            -var="runner_script_sas_url=${{ secrets.RUNNER_SCRIPT_SAS_URL }}" \
+            -var="deploy_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -out=/tmp/tfplan-core \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 

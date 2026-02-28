@@ -19,3 +19,13 @@ data "azurerm_client_config" "current" {}
 data "azuread_user" "runner_admin" {
   user_principal_name = var.runner_admin_upn
 }
+
+# ─── Deploy storage account ───────────────────────────────────────────────────
+# Read the state/scripts storage account so the Custom Script Extension can
+# authenticate to blob storage using the account key (passed in
+# protected_settings, encrypted by Azure).
+
+data "azurerm_storage_account" "deploy" {
+  name                = var.deploy_storage_account_name
+  resource_group_name = "rg-core-deploy"
+}
