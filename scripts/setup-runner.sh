@@ -65,6 +65,20 @@ if ! command -v az &>/dev/null; then
   curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
 fi
 
+# ── Node.js (required by GitHub Actions JavaScript actions) ───────────────────
+# actions/checkout, azure/login, hashicorp/setup-terraform, etc. are all
+# Node-based. ubuntu-latest runners ship with Node pre-installed; self-hosted
+# runners do not.
+
+if ! command -v node &>/dev/null; then
+  log "Installing Node.js 20 LTS"
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y -qq nodejs
+  log "Node.js $(node --version) installed"
+else
+  log "Node.js $(node --version) already present — skipping"
+fi
+
 # ── Runner registration token (fresh from GitHub API) ─────────────────────────
 # Using the long-lived management PAT to exchange for a 1-hour registration
 # token at boot time. This avoids embedding a pre-generated token in Terraform

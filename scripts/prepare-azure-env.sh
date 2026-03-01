@@ -13,9 +13,12 @@
 #   6. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
 #   7. Assign the Entra ID "Application Developer" role so Terraform can create
 #      App Registrations via the azuread provider.
-#   8. Assign the Entra ID "Directory Readers" role so Terraform can resolve
+#   8. Grant Microsoft Graph Application.ReadWrite.All so the SP (running in
+#      app-only / service principal mode) can PATCH app registrations AND
+#      create service principals — OwnedBy is not sufficient for SP creation.
+#   9. Assign the Entra ID "Directory Readers" role so Terraform can resolve
 #      users and groups via the azuread provider.
-#   9. Print the GitHub Actions secrets that need to be configured.
+#  10. Print the GitHub Actions secrets that need to be configured.
 #
 # Note: the scripts container and setup-runner.sh blob are managed by Terraform
 # (runner.tf), not this script.  Terraform runs in GitHub Actions which has
@@ -435,6 +438,76 @@ assign_application_developer() {
   fi
 }
 
+# ─── Microsoft Graph — Application.ReadWrite.All permission ───────────────────
+# The "Application Developer" directory role is designed for interactive users.
+# For service principal (app-only) flows the Terraform azuread provider uses,
+# the SP needs an appRoleAssignment on the Microsoft Graph resource.
+#
+# Application.ReadWrite.OwnedBy is NOT sufficient: creating azuread_service_principal
+# resources (even for owned apps) is blocked with:
+#   "the backing application of the service principal being created must in the
+#    local tenant"
+# Application.ReadWrite.All (1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9) covers
+# both app registration management AND service principal creation.
+assign_graph_app_rw_all() {
+  header "Microsoft Graph — Application.ReadWrite.All permission"
+
+  local graph_app_id="00000003-0000-0000-c000-000000000000"
+  local app_rw_all_id="1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"
+
+  # Resolve the Microsoft Graph service principal object ID in this tenant.
+  local graph_sp_id
+  graph_sp_id=$(az ad sp show \
+    --id    "$graph_app_id" \
+    --query "id" \
+    --output tsv 2>/dev/null) \
+    || die "Cannot resolve Microsoft Graph service principal in this tenant."
+
+  info "Microsoft Graph SP object ID: ${graph_sp_id}"
+
+  # Remove the narrower OwnedBy role if it was previously granted, to avoid
+  # duplicate / conflicting assignments.
+  local owned_by_id="18a4783c-866b-4cc7-a460-3d5e5662c884"
+  local owned_by_assignment
+  owned_by_assignment=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+    --query "value[?appRoleId=='${owned_by_id}'].id | [0]" \
+    --output tsv 2>/dev/null || true)
+  if [[ -n "$owned_by_assignment" && "$owned_by_assignment" != "None" ]]; then
+    info "Removing narrower Application.ReadWrite.OwnedBy assignment ..."
+    az rest \
+      --method DELETE \
+      --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments/${owned_by_assignment}" \
+      --output none 2>/dev/null || true
+    success "Removed Application.ReadWrite.OwnedBy."
+  fi
+
+  # Check whether Application.ReadWrite.All is already assigned.
+  local existing
+  existing=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+    --query "value[?appRoleId=='${app_rw_all_id}'].id | [0]" \
+    --output tsv 2>/dev/null || true)
+
+  if [[ -n "$existing" && "$existing" != "None" ]]; then
+    success "Application.ReadWrite.All already granted — skipping."
+  else
+    info "Granting Application.ReadWrite.All to SP ${SP_OBJECT_ID} ..."
+    az rest \
+      --method POST \
+      --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+      --body "{
+        \"principalId\": \"${SP_OBJECT_ID}\",
+        \"resourceId\":  \"${graph_sp_id}\",
+        \"appRoleId\":   \"${app_rw_all_id}\"
+      }" \
+      --output none
+    success "Granted Application.ReadWrite.All (admin consent applied automatically)."
+  fi
+}
+
 # ─── Entra ID Directory Readers role ──────────────────────────────────────────
 # Terraform's azuread provider needs directory read access to resolve users,
 # groups, and service principals (data sources such as azuread_user,
@@ -569,6 +642,7 @@ main() {
   add_federated_credentials
   assign_roles
   assign_application_developer
+  assign_graph_app_rw_all
   assign_directory_reader
   print_summary
 
