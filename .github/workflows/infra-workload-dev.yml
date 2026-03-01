@@ -28,8 +28,8 @@ env:
   PH3_ROOT: "terraform/phase3/env"
 
 jobs:
-  apply-env:
-    name: "phase1/env — Plan & Apply"
+  apply-infra:
+    name: "Dev infra — Plan & Apply"
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -102,10 +102,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  apply-phase3:
-    name: "phase3 — Plan & Apply"
+  apply-apim:
+    name: "Dev workload config — Plan & Apply"
     runs-on: [self-hosted, linux]
-    needs: apply-env
+    needs: apply-infra
     environment: dev
     env:
       ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}

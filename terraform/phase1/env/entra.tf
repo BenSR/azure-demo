@@ -17,11 +17,11 @@ resource "azuread_application" "func_api" {
   display_name = "app-func-${local.workload}-${each.key}-api-${local.environment}"
 
   identifier_uris = [
-    "api://func-${local.workload}-${each.key}-api-${local.environment}"
+    "api://${data.azuread_client_config.current.tenant_id}/func-${local.workload}-${each.key}-api-${local.environment}"
   ]
 }
 
 resource "azuread_service_principal" "func_api" {
-  for_each  = azuread_application.func_api
-  client_id = each.value.client_id
+  for_each  = local.stamps_map
+  client_id = azuread_application.func_api[each.key].client_id
 }
