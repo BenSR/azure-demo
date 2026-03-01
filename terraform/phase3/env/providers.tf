@@ -24,8 +24,8 @@ terraform {
   # Phase 3 is workspace-driven (dev/prod).  Use the same workspace as
   # the phase1/env deployment it targets:
   #
-  #   terraform -chdir=terraform/phase3 workspace select dev
-  #   terraform -chdir=terraform/phase3 apply \
+  #   terraform -chdir=terraform/phase3/env workspace select dev
+  #   terraform -chdir=terraform/phase3/env apply \
   #     -var-file=terraform.tfvars -var-file=dev.tfvars
   #
   # Phase 3 MUST run from a VNet-injected runner (snet-runner subnet) so it

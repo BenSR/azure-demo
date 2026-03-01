@@ -1,3 +1,29 @@
+# ─── APIM — Load-balancing policy helper ──────────────────────────────────────
+# Generates one <when> block per stamp for use inside the <choose> element of
+# the inbound policy.  Each block:
+#   1. Acquires an Entra MI token scoped to that stamp's app registration.
+#   2. Attaches it as a Bearer Authorization header.
+#   3. Routes the request to that stamp's APIM backend.
+#
+# Stamps are sorted by stamp_name so the index used in the Random.Next()
+# condition is stable across plan/apply cycles.
+
+locals {
+  _apim_lb_when_blocks = join("\n", [for i, k in local.sorted_stamp_keys :
+    join("\n", [
+      "        <when condition=\"@((int)context.Variables[&quot;stamp-index&quot;] == ${i})\">",
+      "          <authentication-managed-identity",
+      "            resource=\"api://func-${local.workload}-${k}-api-${local.environment}\"",
+      "            output-token-variable-name=\"msi-access-token\" />",
+      "          <set-header name=\"Authorization\" exists-action=\"override\">",
+      "            <value>@(\"Bearer \" + (string)context.Variables[\"msi-access-token\"])</value>",
+      "          </set-header>",
+      "          <set-backend-service backend-id=\"func-backend-stamp-${k}\" />",
+      "        </when>",
+    ])
+  ])
+}
+
 # ─── APIM — Named Values ──────────────────────────────────────────────────────
 # Named Values expose configuration to APIM policies without hard-coding values.
 # The client certificate thumbprint is used by the inbound mTLS policy to
@@ -43,8 +69,7 @@ resource "azurerm_api_management_backend" "func" {
 
 # ─── APIM — API ───────────────────────────────────────────────────────────────
 # One shared API per environment.  All stamps serve the same API contract;
-# the backend is selected in the policy (see wkld-api-policy below).
-# Extend with a backend pool or routing header for active multi-stamp traffic.
+# the backend is selected per-request by the round-robin load-balancing policy.
 
 resource "azurerm_api_management_api" "wkld" {
   name                  = "wkld-api-${local.environment}"
@@ -78,22 +103,19 @@ resource "azurerm_api_management_api_operation" "wkld" {
   }
 }
 
-# ─── APIM — API Policy (mTLS inbound + MI auth + backend routing) ─────────────
+# ─── APIM — API Policy (mTLS + round-robin load balancing) ────────────────────
 # Inbound pipeline:
 #   1. validate-client-certificate — enforces mTLS; rejects any caller that
 #      does not present the client certificate identified by the Named Value
 #      thumbprint.  validate-trust and validate-revocation are disabled
 #      (self-signed CA in assessment; enable for production PKI).
-#   2. authentication-managed-identity — acquires a short-lived Entra ID JWT
-#      scoped to the primary stamp's app registration (created in phase1/env).
-#      APIM's system-assigned Managed Identity is the requester; no shared
-#      secret is needed (Section 12.5, app-planning.md).
-#   3. set-header Authorization — attaches the Bearer token so the Function
-#      App's EasyAuth middleware can validate the caller's identity before any
-#      function code runs.
-#   4. set-backend-service — routes to the primary stamp backend (stamp 1 by
-#      default).  For active multi-stamp routing, replace with a backend pool
-#      or a choose/when block that selects the backend based on a request header.
+#   2. set-variable stamp-index — picks a random integer in [0, stamp_count)
+#      to select a backend for this request (uniform random load balancing).
+#   3. choose/when — for each stamp index, acquires a short-lived Entra ID JWT
+#      scoped to that stamp's app registration (created in phase1/env/entra.tf),
+#      attaches it as a Bearer token, and routes to that stamp's backend.
+#      Each stamp has its own app registration so the MI token resource must
+#      also be selected per stamp.
 #
 # NOTE: The health-check operation has a separate operation-level policy that
 # bypasses steps 1–3 (no mTLS, no MI auth) — see below.
@@ -104,9 +126,8 @@ resource "azurerm_api_management_api_operation" "wkld" {
 # via the azurerm provider directly for the Developer SKU; it is configured
 # via the Azure portal or the Management REST API.
 #
-# NOTE: The Entra app registration (identifier_uri) is created in phase1/env.
-# The identifier_uri is deterministic — constructed from workload + stamp + env —
-# so phase3 constructs it from locals rather than reading remote state.
+# NOTE: The Entra app registration identifier_uri is constructed deterministically
+# as api://func-<workload>-<stamp>-api-<env> (same convention as phase1/env).
 
 resource "azurerm_api_management_api_policy" "wkld" {
   api_name            = azurerm_api_management_api.wkld.name
@@ -135,22 +156,14 @@ resource "azurerm_api_management_api_policy" "wkld" {
           </identities>
         </validate-client-certificate>
         <!--
-          Managed Identity auth: acquire a short-lived Entra ID JWT scoped to
-          the primary stamp's app registration.  The Function App's EasyAuth
-          middleware validates this token before any function code runs.
-          resource = identifier_uri of the Entra app registration, constructed
-          deterministically as api://func-<workload>-<stamp>-api-<env>.
-          The registration itself is created in phase1/env/entra.tf.
+          Round-robin load balancing: pick a random stamp index in [0, ${local.stamp_count}).
+          The choose/when blocks below acquire the correct Entra MI token and
+          route to the matching backend for that stamp.
         -->
-        <authentication-managed-identity
-          resource="api://func-${local.workload}-${local.primary_stamp_key}-api-${local.environment}"
-          output-token-variable-name="msi-access-token" />
-        <set-header name="Authorization" exists-action="override">
-          <value>@("Bearer " + (string)context.Variables["msi-access-token"])</value>
-        </set-header>
-        <!-- Route to the primary stamp backend. -->
-        <set-backend-service
-          backend-id="${azurerm_api_management_backend.func[local.primary_stamp_key].name}" />
+        <set-variable name="stamp-index" value="@(new Random().Next(${local.stamp_count}))" />
+        <choose>
+${local._apim_lb_when_blocks}
+        </choose>
       </inbound>
       <backend>
         <base />
@@ -180,6 +193,9 @@ resource "azurerm_api_management_api_policy" "wkld" {
 # Network isolation (NSGs restrict the PE subnet to APIM-sourced traffic on
 # port 443) limits the blast radius — the health endpoint returns no sensitive
 # data: {"status": "healthy", "timestamp": "..."}.
+#
+# Health probes always target the primary stamp (stamp-index 0) to avoid
+# introducing randomness into synthetic monitoring.
 
 resource "azurerm_api_management_api_operation_policy" "health_check" {
   operation_id        = "health-check"

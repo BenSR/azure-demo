@@ -25,7 +25,7 @@ env:
   ARM_USE_OIDC: "true"
   TF_VERSION: "~1.7"
   ENV_ROOT: "terraform/phase1/env"
-  PH3_ROOT: "terraform/phase3"
+  PH3_ROOT: "terraform/phase3/env"
 
 jobs:
   apply-env:

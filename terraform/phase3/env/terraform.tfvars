@@ -9,8 +9,8 @@
 #
 # Typical apply workflow (after phase1/core and phase1/env have been applied):
 #
-#   terraform -chdir=terraform/phase3 workspace select dev
-#   terraform -chdir=terraform/phase3 apply \
+#   terraform -chdir=terraform/phase3/env workspace select dev
+#   terraform -chdir=terraform/phase3/env apply \
 #     -var-file=terraform.tfvars -var-file=dev.tfvars
 #
 # Phase 3 MUST run on the VNet-injected GitHub runner (snet-runner) — it
