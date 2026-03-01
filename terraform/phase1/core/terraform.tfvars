@@ -6,7 +6,6 @@
 # Typical apply workflow:
 #   terraform -chdir=terraform/phase1/core apply
 #
-# Sensitive values are NOT stored here.
 #
 # Provider auth (OIDC in CI, CLI locally) is configured via ARM_* env vars —
 # never in this file.
