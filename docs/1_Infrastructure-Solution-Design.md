@@ -58,8 +58,8 @@ stamp_subnets = [
 
 ```hcl
 stamps = [
-  { stamp_name = "1", location = "uksouth", image_name = "wkld-api", image_tag = "latest" },
-  { stamp_name = "2", location = "uksouth", image_name = "wkld-api", image_tag = "latest" },
+  { stamp_name = "1", location = "northeurope", image_name = "wkld-api", image_tag = "latest" },
+  { stamp_name = "2", location = "northeurope", image_name = "wkld-api", image_tag = "latest" },
 ]
 ```
 
@@ -83,7 +83,7 @@ Own subnet, delegated to `Microsoft.ApiManagement/service`, internal mode only. 
 
 ## Container Registry (ACR)
 
-I need an ACR to host the Function App build image. It will be a Python-based app, built into a Docker container. The ACR will need to be behind a Private Endpoint — so a managed VNet GitHub runner will be needed to connect to it. I'll also need to make sure the Service Principal used by GitHub Actions and the Function App Managed Identity have the relevant permissions.
+I need an ACR to host the Function App build image. It will be a Python-based app, built into a Docker container. The ACR will need to be behind a Private Endpoint — so a self-hosted runner VM inside the VNet will be needed to connect to it. I'll also need to make sure the Service Principal used by GitHub Actions and the Function App Managed Identity have the relevant permissions. The ACR name uses an 8-character hex prefix derived from the subscription ID for global uniqueness (e.g. `acrcore09d0073b`).
 
 
 ## Networking
@@ -101,7 +101,7 @@ Two categories of subnets:
 **Fixed shared subnets** (one per VNet, created by `modules/vnet`):
 - **`snet-apim`** — delegated to `Microsoft.ApiManagement/service` for the internal-mode APIM.
 - **`snet-shared-pe`** — Private Endpoints for shared resources (ACR). No delegation.
-- **`snet-runner`** — delegated to `GitHub.Network/networkSettings` for the VNet-injected runner. NAT Gateway attached.
+- **`snet-runner`** — self-hosted runner VM (`vm-runner-core`). No delegation. NAT Gateway attached for internet egress.
 - **`snet-jumpbox`** — Windows 11 jump box VM. No delegation.
 
 **Per-stamp subnets** (one pair per stamp per env, created by `modules/workload-stamp-subnet`):
@@ -130,7 +130,7 @@ I am choosing the **jump box** approach. It is simpler, cheaper, and avoids the 
 
 The VM will be:
 - **OS:** Windows 11, small SKU (e.g., `Standard_B2s`).
-- **Authentication:** Entra ID login via the `AADLoginForWindows` VM extension. No local admin password stored.
+- **Authentication:** Entra ID login via the `AADLoginForWindows` VM extension. Random local admin password (retrievable via `scripts/get-jumpbox-creds.sh`).
 - **Public IP:** Static Standard SKU, used for RDP access.
 - **Subnet:** Dedicated `snet-jumpbox` subnet with an NSG allowing inbound RDP (3389) from the internet and outbound HTTPS to the VNet's PE subnets.
 - **No NAT Gateway** — the jump box does not need general internet egress; it is a diagnostic tool for reaching internal resources.
@@ -146,6 +146,7 @@ Use Terraform `tls` provider to generate a self-signed CA + client cert signed b
 - **App Insights** on the Function App — tracing, dependency tracking, live metrics.
 - **Log Analytics Workspace** — central sink, everything goes here.
 - **Diagnostic settings** on every resource, streaming to Log Analytics. Technically a stretch goal but it's a few lines of TF per resource, just doing it.
+- **NSG flow logs** — disabled. Azure blocked new NSG flow log creation from June 2025; the `flow_logs_enabled` flag is set to `false`.
 - **Alert rule** on 5xx error rate — practical, easy to demo.
 
 
@@ -178,20 +179,20 @@ Split into two independent root modules within `phase1/`:
 - APIM (internal mode, in its own subnet)
 - Module call: `modules/workload-stamp` per stamp — ASP, Function App(s), Storage Account, **Key Vault**, App Insights, all PEs
 
-### Phase 2 — Manual Github Setup
+### Phase 2 — Runner Registration (Automated via Custom Script Extension)
 
-I will get GitHub setup to inject the managed runner into the subnet.
+The runner VM (`vm-runner-core`) is provisioned by Terraform in Phase 1 and automatically configured via a Custom Script Extension that runs `setup-runner.sh`. This script installs Docker, Azure CLI, Node.js 20, downloads the GitHub Actions runner agent, exchanges a `RUNNER_MANAGEMENT_PAT` for a short-lived registration token, and registers the runner with the `self-hosted,linux` label set. The runner agent runs as a systemd service.
 
 ### Phase 3 — Private data-plane ops (self-hosted runner)
 
-Phase 3 is workspace-driven (like `phase1/env/`) and reads remote state from both `phase1/core/` and `phase1/env/`:
+Phase 3 lives at `terraform/phase3/env/`, is workspace-driven (like `phase1/env/`), and reads remote state from both `phase1/core/` and `phase1/env/`:
 
 | File | Purpose |
 |------|---------|
 | `main.tf` | Provider config (`azurerm` + `azuread`), backend, remote state for both `core` and `env`. Environment derived from workspace. |
 | `secrets.tf` | Writes the CA certificate and client certificate (generated by `phase1/core/certificates.tf`) into each stamp's Key Vault. Requires data-plane access — only possible from inside the VNet. |
-| `apim-config.tf` | Creates APIM backends (one per stamp's Function App PE), API definition, operations, and the mTLS client-certificate validation policy using the CA cert from Key Vault. |
-| `alerts.tf` | Monitor metric alerts (5xx rate, availability test failures), App Insights standard web tests against the Function App health endpoint via APIM, and the shared Action Group (email/webhook). |
+| `apim-config.tf` | Creates APIM backends (one per stamp's Function App PE), API definition, operations, and the mTLS client-certificate validation policy using the CA cert from Key Vault. Includes load-balancing policy that uses `Random.Next()` to select a stamp and acquires per-stamp Entra MI tokens. |
+| `alerts.tf` | Monitor metric alerts (5xx rate, availability test failures), App Insights standard web tests against the Function App health endpoint via APIM, and the shared Action Group (email/webhook). Alert thresholds are environment-specific (dev: 10 failures / 95% availability; prod: 3 failures / 99.9% availability). |
 | `variables.tf` | Shared variables: subscription, tenant, location, state account name, per-env tuning (alert thresholds, test probe frequency). |
 | `outputs.tf` | APIM gateway URL, alert rule IDs, web test IDs. |
 
@@ -220,33 +221,36 @@ terraform/
       terraform.tfvars    # Shared values (subscription, location, APIM publisher)
       dev.tfvars          # dev stamps: stamp_name, image, location
       prod.tfvars         # prod stamps
-  phase3/          # Private data-plane ops — workspace-driven (dev/prod)
-                   # Runs on self-hosted VNet-injected runner
-    main.tf             # Provider config + remote state (reads core + env outputs)
-    secrets.tf          # CA + client cert writes to per-stamp Key Vaults
-    apim-config.tf      # APIM backends, API, operations, mTLS policy
-    alerts.tf           # Monitor alerts, web tests, action groups
-    variables.tf
-    outputs.tf
-    terraform.tfvars    # Shared values (subscription, location, state account)
-    dev.tfvars
-    prod.tfvars
+  phase3/
+    env/             # Private data-plane ops — workspace-driven (dev/prod)
+                     # Runs on self-hosted runner VM
+      main.tf             # Provider config + remote state (reads core + env outputs)
+      secrets.tf          # CA + client cert writes to per-stamp Key Vaults
+      apim-config.tf      # APIM backends, API, operations, mTLS policy
+      alerts.tf           # Monitor alerts, web tests, action groups
+      variables.tf
+      outputs.tf
+      terraform.tfvars    # Shared values (subscription, location, state account)
+      dev.tfvars
+      prod.tfvars
 ```
 
-**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3.tfstate` (per workspace). `phase1/env/` and `phase3/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/` additionally reads `phase1/env/` outputs.
+**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3-env.tfstate` (per workspace). `phase1/env/` and `phase3/env/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/env/` additionally reads `phase1/env/` outputs.
 
 
 ## CI/CD Pipeline
 
-GitHub Actions workflow mirrors the phases:
+Eight GitHub Actions workflows (`infra-validate`, `infra-core-dev`, `infra-core-prod`, `infra-workload-dev`, `infra-workload-prod`, `app-pr`, `app-dev`, `app-prod`) mirror the phased deployment:
 
-1. **Validate** — `fmt -check` + `validate` on both phases.
-2. **Plan Phase 1** — hosted runner, OIDC auth, `terraform plan`.
-3. **Apply Phase 1** — on merge to main.
-4. **Plan/Apply Phase 2** — self-hosted runner from Phase 1, private-network work.
+1. **Validate** (`infra-validate.yml`) — `fmt -check` + `tflint` + `validate` on all phases. Triggers on feature branch pushes and PRs.
+2. **Core infra** — plan-only on dev merge (`infra-core-dev`), plan → approval → apply on main merge (`infra-core-prod`).
+3. **Workload infra** — sequential phase1/env then phase3/env. Auto-apply on dev (`infra-workload-dev`), TWO separate approval gates on prod (`infra-workload-prod`).
+4. **App** — test + build-check on PRs (`app-pr`), test + build + push + webhook deploy on dev (`app-dev`), test + build + push → approval → webhook deploy on prod (`app-prod`).
 
-OIDC federation = no stored secrets in GitHub. SP trusts tokens from repo branch/environment. Document Entra ID app registration + federated credential setup in README.
+Deployment uses Kudu container deployment webhooks (stored in Key Vault) rather than `az functionapp restart`, which ensures the Function App actually pulls the latest image digest.
+
+OIDC federation = no stored secrets in GitHub. SP trusts tokens from repo branch/environment. Additional secret: `RUNNER_MANAGEMENT_PAT` (GitHub PAT for runner registration).
 
 ---
 
-*Next: module interfaces, then get Phase 1 standing up.*
+*Updated to reflect actual implementation.*

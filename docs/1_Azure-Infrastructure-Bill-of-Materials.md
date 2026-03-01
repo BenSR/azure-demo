@@ -38,7 +38,7 @@ Complete inventory of every Azure resource expected to be created, including SKU
 
 | # | Subnet Name | Type | CIDR | Usable IPs | Delegation | Purpose | Phase |
 |---|------------|------|------|------------|------------|---------|-------|
-| 3 | `snet-runner` | `azurerm_subnet` | `10.100.128.0/24` | 251 | `GitHub.Network/networkSettings` | GitHub Actions VNet-injected runner. NAT Gateway attached. | Phase 1 (core) |
+| 3 | `snet-runner` | `azurerm_subnet` | `10.100.128.0/24` | 251 | None | Self-hosted GitHub Actions runner VM (`vm-runner-core`). NAT Gateway attached for internet egress. | Phase 1 (core) |
 | 4 | `snet-jumpbox` | `azurerm_subnet` | `10.100.129.0/27` | 27 | None | Windows 11 jump box VM for developer connectivity. | Phase 1 (core) |
 | 5 | `snet-apim` | `azurerm_subnet` | `10.100.129.32/27` | 27 | `Microsoft.ApiManagement/service` | API Management internal VNet mode. | Phase 1 (core) |
 | 6 | `snet-shared-pe` | `azurerm_subnet` | `10.100.130.0/24` | 251 | None | Private Endpoints for ACR. PE network policies enabled. | Phase 1 (core) |
@@ -52,6 +52,7 @@ Complete inventory of every Azure resource expected to be created, including SKU
 | — | `snet-stamp-dev-2-pe` | `azurerm_subnet` | `10.100.2.0/24` | 251 | None | Dev stamp 2 PE subnet. | Phase 1 (core) |
 | — | `snet-stamp-dev-2-asp` | `azurerm_subnet` | `10.100.3.0/24` | 251 | `Microsoft.Web/serverFarms` | Dev stamp 2 ASP subnet. | Phase 1 (core) |
 | — | `snet-stamp-prod-1-pe` | `azurerm_subnet` | `10.100.6.0/24` | 251 | None | Prod stamp 1 PE subnet. | Phase 1 (core) |
+| — | `snet-stamp-prod-1-asp` | `azurerm_subnet` | `10.100.7.0/24` | 251 | `Microsoft.Web/serverFarms` | Prod stamp 1 ASP subnet. | Phase 1 (core) |
 
 ### 2.3 Network Security Groups
 
@@ -114,7 +115,7 @@ One link resource per zone, binding it to the VNet so all subnets resolve Privat
 
 | # | Resource Name | Type | SKU | Purpose | Details | Phase |
 |---|--------------|------|-----|---------|---------|-------|
-| 31 | `acrcore` | `azurerm_container_registry` | **Premium** | Hosts Docker images for Function App(s). Shared across all environments. | Admin disabled. Managed Identity pull only. `public_network_access_enabled = false`. Resource group: `rg-core`. | Phase 1 (core) |
+| 31 | `acrcore<sub-hex>` | `azurerm_container_registry` | **Premium** | Hosts Docker images for Function App(s). Shared across all environments. | Admin disabled. Managed Identity pull only. `public_network_access_enabled = false`. Name includes first 8 hex chars of subscription ID for global uniqueness (e.g. `acrcore09d0073b`). Resource group: `rg-core`. | Phase 1 (core) |
 | 32 | `pe-acr-core` | `azurerm_private_endpoint` | — | Private connectivity to ACR from VNet. | Subnet: `snet-shared-pe`. DNS zone group: `privatelink.azurecr.io`. Resource group: `rg-core`. | Phase 1 (core) |
 
 ### 4.3 API Management
@@ -127,8 +128,7 @@ One link resource per zone, binding it to the VNet so all subnets resolve Privat
 
 | # | Resource Name | Type | SKU | Purpose | Details | Phase |
 |---|--------------|------|-----|---------|---------|-------|
-| 34 | `law-core` | `azurerm_log_analytics_workspace` | **PerGB2018** | Central log sink for all diagnostic settings, NSG flow logs, and App Insights backend. Shared across all environments. | 30 day retention. Resource group: `rg-core`. | Phase 1 (core) |
-| 35 | `stdiagcore` | `azurerm_storage_account` | **Standard_LRS** | Raw blob storage for NSG flow logs (required by Network Watcher). | `public_network_access_enabled = true` (Network Watcher requires public write access). Resource group: `rg-core`. | Phase 1 (core) |
+| 34 | `law-core` | `azurerm_log_analytics_workspace` | **PerGB2018** | Central log sink for all diagnostic settings and App Insights backend. Shared across all environments. | 30 day retention. Resource group: `rg-core`. | Phase 1 (core) |
 
 ---
 
@@ -178,11 +178,20 @@ All resources below are created by the `modules/workload-stamp` module for stamp
 
 | # | Resource Name | Type | SKU / Size | Purpose | Details | Phase |
 |---|--------------|------|-----------|---------|---------|-------|
-| 47 | `vm-jumpbox-core` | `azurerm_windows_virtual_machine` | **Standard_B2s** (2 vCPU, 4 GiB RAM) | Windows 11 jump box for developer access to VNet-internal resources. Shared across all environments. | Entra ID auth via `AADLoginForWindows` extension. System-assigned MI. Resource group: `rg-core`. | Phase 1 (core) |
+| 47 | `vm-jumpbox-core` | `azurerm_windows_virtual_machine` | **Standard_B2s** (2 vCPU, 4 GiB RAM) | Windows 11 jump box for developer access to VNet-internal resources. Shared across all environments. | Random local admin password (retrievable via `get-jumpbox-creds.sh`). Entra ID auth via `AADLoginForWindows` extension. Resource group: `rg-core`. | Phase 1 (core) |
 | 48 | `nic-jumpbox-core` | `azurerm_network_interface` | — | NIC for jump box VM. | Attached to `snet-jumpbox`. Resource group: `rg-core`. | Phase 1 (core) |
 | 49 | `pip-jumpbox-core` | `azurerm_public_ip` | Standard, Static | Public IP for RDP ingress to jump box. | In production, replace with Azure Bastion. Resource group: `rg-core`. | Phase 1 (core) |
 | 50 | OS Disk | `azurerm_managed_disk` (implicit) | **Premium_LRS** | Boot disk for Windows 11. | Created implicitly by the VM resource. | Phase 1 (core) |
-| 51 | `AADLoginForWindows` | `azurerm_virtual_machine_extension` | — | VM extension enabling Entra ID sign-in. | Eliminates need for local admin credentials. | Phase 1 (core) |
+| 51 | `AADLoginForWindows` | `azurerm_virtual_machine_extension` | — | VM extension enabling Entra ID sign-in on jump box. | Supplements local admin with Entra ID authentication. | Phase 1 (core) |
+
+### 6b. Self-Hosted Runner
+
+| # | Resource Name | Type | SKU / Size | Purpose | Details | Phase |
+|---|--------------|------|-----------|---------|---------|-------|
+| 52 | `vm-runner-core` | `azurerm_linux_virtual_machine` | **Standard_B2s** (2 vCPU, 4 GiB RAM) | Ubuntu 22.04 self-hosted GitHub Actions runner. Runs Docker builds, Phase 3 Terraform, and webhook deploys from inside the VNet. | Entra ID SSH via `AADSSHLoginForLinux` extension. Custom Script Extension runs `setup-runner.sh` (installs Docker, Azure CLI, Node.js, GitHub Actions runner agent). Resource group: `rg-core`. | Phase 1 (core) |
+| 53 | `nic-runner-core` | `azurerm_network_interface` | — | NIC for runner VM. | Attached to `snet-runner`. Resource group: `rg-core`. | Phase 1 (core) |
+| 54 | `AADSSHLoginForLinux` | `azurerm_virtual_machine_extension` | — | VM extension enabling Entra ID SSH login. | Allows SSH via `az ssh vm` from the jumpbox. | Phase 1 (core) |
+| 55 | Custom Script Extension | `azurerm_virtual_machine_extension` | — | Runs `setup-runner.sh` to install Docker, Azure CLI, Node.js 20, and register the GitHub Actions runner agent. | Uses `RUNNER_MANAGEMENT_PAT` to exchange for a short-lived registration token. Runner agent installed as a systemd service. | Phase 1 (core) |
 
 ---
 
@@ -226,7 +235,7 @@ Streaming logs and metrics from every resource to the shared Log Analytics Works
 | 65 | `acrcore` (ACR) | ContainerRegistryLoginEvents, ContainerRegistryRepositoryEvents | Phase 1 (core) |
 | 66 | `apim-wkld-shared-dev` (APIM) | GatewayLogs, WebSocketConnectionLogs | Phase 1 (env) |
 | 67 | `law-core` (Log Analytics Workspace) | Audit (self-diagnostic) | Phase 1 (core) |
-| 68 | NSG Flow Logs (×4 fixed + 2 stamp NSGs) | NetworkSecurityGroupFlowEvent via Traffic Analytics | Phase 1 (core) |
+| ~~68~~ | ~~NSG Flow Logs~~ | *(Disabled — Azure blocked new NSG flow log creation from June 2025. The `flow_logs_enabled` flag is set to `false` in both `modules/vnet` and `modules/workload-stamp-subnet`.)* | — |
 
 ---
 
@@ -252,13 +261,9 @@ Streaming logs and metrics from every resource to the shared Log Analytics Works
 
 ---
 
-## 12. GitHub Runner Network Integration
+## 12. Self-Hosted Runner
 
-Not a traditional Azure resource — provisioned via GitHub, but requires an Azure-side Network Settings resource.
-
-| # | Resource | Type | Purpose | Phase |
-|---|---------|------|---------|-------|
-| 72 | GitHub Network Settings | `azurerm_network_settings` / GitHub API | Allows GitHub-managed runner to inject into `snet-runner` with the associated NSG and NAT Gateway. | Phase 1 (Azure side) / Phase 2 (GitHub side — manual) |
+The runner is a self-hosted Ubuntu 22.04 VM (`vm-runner-core`) in `snet-runner`, provisioned by Terraform and configured via Custom Script Extension (`setup-runner.sh`). It is **not** a GitHub-managed VNet-injected runner — it is a standard VM registered as a GitHub Actions runner with the `self-hosted,linux` label set. Registration uses a short-lived token exchanged from `RUNNER_MANAGEMENT_PAT` (a GitHub PAT stored as a GitHub Actions secret).
 
 ---
 
@@ -285,18 +290,18 @@ Not a traditional Azure resource — provisioned via GitHub, but requires an Azu
 | Key Vault | 2 (one per stamp) |
 | API Management (APIM) | 1 |
 | Log Analytics Workspace | 1 (shared) |
-| Diagnostic Storage Account | 1 (shared) |
+| ~~Diagnostic Storage Account~~ | ~~1 (removed — NSG flow logs disabled)~~ |
 | App Service Plan | 2 (one per stamp) |
 | Function App | 2 (one per stamp) |
 | Storage Account | 2 (one per stamp) |
 | Application Insights | 2 (one per stamp) |
 | Jump Box (VM + NIC + PIP + Disk + Extension) | 5 (shared) |
+| Self-Hosted Runner (VM + NIC + Extensions) | 4 (shared) |
 | Certificates (CA + Client) | 2 |
 | Role Assignments | ~9 per stamp (×2) = ~18 |
 | Diagnostic Settings | ~8 per stamp + 4 shared = ~20 |
 | Monitor Alerts + Action Group | 3 per env (Phase 3) |
 | APIM Config (Backend + API + Operations + Policy) | 4 per env (Phase 3) |
-| GitHub Network Settings | 1 |
 | **Total (approximate)** | **~120** |
 
 ---
@@ -305,7 +310,7 @@ Not a traditional Azure resource — provisioned via GitHub, but requires an Azu
 
 | Resource | SKU / Tier | Rationale |
 |----------|-----------|-----------|
-| ACR | **Premium** | Required for Private Endpoint support. |
+| ACR | **Premium** | Required for Private Endpoint support. Name uses subscription ID prefix for global uniqueness. |
 | Key Vault | **Standard** | Sufficient for secrets and certificate storage. No HSM-backed keys needed. |
 | APIM | **Developer** | Assessment constraint (TC-5). Supports internal VNet mode. Not for production (no SLA). |
 | App Service Plan | **P1v3** | Minimum tier supporting VNet integration + Linux containers. |
@@ -315,3 +320,4 @@ Not a traditional Azure resource — provisioned via GitHub, but requires an Azu
 | Jump Box VM | **Standard_B2s** | 2 vCPU / 4 GiB — minimal footprint for RDP diagnostics. Burstable. |
 | Storage Account | **Standard_LRS** | Locally redundant; sufficient for Function App backing store in a single-region assessment. |
 | OS Disk (Jump Box) | **Premium_LRS** | Default for Windows 11 VM in azurerm provider. |
+| Self-Hosted Runner VM | **Standard_B2s** | 2 vCPU / 4 GiB — burstable, sufficient for CI/CD runner workloads. |

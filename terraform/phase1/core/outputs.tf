@@ -84,6 +84,11 @@ output "client_private_key_pem" {
   description = "Client certificate private key in PEM format. Read by Phase 3 to write into Key Vault."
 }
 
+output "client_cert_thumbprint" {
+  value       = data.tls_certificate.client.certificates[0].sha1_fingerprint
+  description = "SHA-1 thumbprint of the client certificate (hex). Used by Phase 3 APIM config for mTLS validation."
+}
+
 # ─── Resource groups ──────────────────────────────────────────────────────────
 
 output "resource_group_core" {

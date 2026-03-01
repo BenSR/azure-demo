@@ -60,3 +60,9 @@ resource "tls_locally_signed_cert" "client" {
     "digital_signature",
   ]
 }
+
+# Parse the client certificate to extract its SHA-1 fingerprint.
+# Used by Phase 3 APIM mTLS validation (requires DER thumbprint).
+data "tls_certificate" "client" {
+  content = tls_locally_signed_cert.client.cert_pem
+}
