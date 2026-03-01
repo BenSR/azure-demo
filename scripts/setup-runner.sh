@@ -11,15 +11,18 @@
 # extension settings in Terraform) re-registers the runner and restarts the
 # service without re-downloading the binary.
 #
-# Args:
-#   $1  GitHub PAT with manage_runners:repo scope (passed via CSE
-#       protected_settings so it is not visible in the Azure portal or logs).
+# Environment variables (set inline by CSE commandToExecute, stored encrypted
+# in protected_settings — not visible in the Azure portal or activity logs):
+#   RUNNER_MANAGEMENT_PAT  GitHub PAT used to obtain a registration token.
+#                          Required permissions:
+#                            Classic PAT  : repo scope
+#                            Fine-grained : Administration → Read and write
 # =============================================================================
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-RUNNER_MANAGEMENT_PAT="${1:?Usage: $0 <github-management-pat>}"
+: "${RUNNER_MANAGEMENT_PAT:?RUNNER_MANAGEMENT_PAT env var is required (set via CSE commandToExecute)}"
 
 GITHUB_REPO="BenSR/azure-demo"
 RUNNER_VERSION="2.331.0"
@@ -66,18 +69,29 @@ fi
 # Using the long-lived management PAT to exchange for a 1-hour registration
 # token at boot time. This avoids embedding a pre-generated token in Terraform
 # state or cloud-init, where it would expire before the VM boots.
+#
+# Required PAT permissions:
+#   Classic PAT  : repo scope
+#   Fine-grained : Administration → Read and write (for the target repository)
 
 log "Requesting runner registration token from GitHub API"
-RUNNER_TOKEN=$(curl -fsSL \
+API_RESPONSE=$(curl -sS \
   -X POST \
   -H "Authorization: Bearer ${RUNNER_MANAGEMENT_PAT}" \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
-  "https://api.github.com/repos/${GITHUB_REPO}/actions/runners/registration-token" \
-  | jq -r '.token')
+  "https://api.github.com/repos/${GITHUB_REPO}/actions/runners/registration-token")
 
-[[ -n "$RUNNER_TOKEN" && "$RUNNER_TOKEN" != "null" ]] \
-  || { log "ERROR: GitHub API did not return a token — verify PAT has manage_runners:repo scope"; exit 1; }
+RUNNER_TOKEN=$(echo "$API_RESPONSE" | jq -r '.token // empty')
+
+if [[ -z "$RUNNER_TOKEN" ]]; then
+  log "ERROR: GitHub API did not return a token. Response:"
+  echo "$API_RESPONSE" | jq . || echo "$API_RESPONSE"
+  log "Check that the PAT has the correct permissions:"
+  log "  Classic PAT  : repo scope"
+  log "  Fine-grained : Administration → Read and write on ${GITHUB_REPO}"
+  exit 1
+fi
 
 # ── Runner binary ──────────────────────────────────────────────────────────────
 
