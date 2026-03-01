@@ -125,13 +125,21 @@ fi
 
 chown -R "${RUNNER_USER}:${RUNNER_USER}" "$RUNNER_HOME"
 
-# ── Tear down any existing service (idempotent re-run support) ─────────────────
+# ── Tear down any existing service and configuration (idempotent re-run) ───────
+# Stop and uninstall the systemd service first, then remove the local runner
+# config files so config.sh can run fresh.  The --replace flag passed to
+# config.sh (below) handles deregistering the old runner on the GitHub side.
 
 if [[ -f "$RUNNER_HOME/svc.sh" ]]; then
   pushd "$RUNNER_HOME" >/dev/null
   ./svc.sh stop 2>/dev/null || true
   ./svc.sh uninstall 2>/dev/null || true
   popd >/dev/null
+fi
+
+if [[ -f "$RUNNER_HOME/.runner" ]]; then
+  log "Removing existing local runner configuration"
+  rm -f "$RUNNER_HOME/.runner" "$RUNNER_HOME/.credentials" "$RUNNER_HOME/.credentials_rsaparams"
 fi
 
 # ── Configure runner ───────────────────────────────────────────────────────────
