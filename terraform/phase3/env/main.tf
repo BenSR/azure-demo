@@ -31,17 +31,9 @@ locals {
   apim_rg   = local.env.resource_group_shared
 
   # ── Client certificate thumbprint ─────────────────────────────────────────
-  # Computed from the client certificate PEM stored in phase1/core state.
-  # Strips the PEM header/footer, decodes the base64 DER body, and produces
-  # the SHA-1 fingerprint that APIM uses to validate incoming client certs.
-  _client_cert_b64 = replace(
-    replace(
-      replace(trimspace(local.core.client_cert_pem),
-      "-----BEGIN CERTIFICATE-----", ""),
-    "-----END CERTIFICATE-----", ""),
-  "\n", "")
-
-  client_cert_thumbprint = upper(sha1(base64decode(local._client_cert_b64)))
+  # Read from phase1/core state where it is computed via the tls_certificate
+  # data source (SHA-1 of the DER-encoded certificate).
+  client_cert_thumbprint = upper(local.core.client_cert_thumbprint)
 
   # Sorted stamp keys — deterministic ordering for the load-balancing policy
   # and for deriving primary_stamp_key without a redundant sort call.

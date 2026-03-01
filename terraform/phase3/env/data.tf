@@ -18,12 +18,13 @@ data "terraform_remote_state" "core" {
 # targets (e.g. workspace "dev" reads the dev APIM, stamps, and KV outputs).
 
 data "terraform_remote_state" "env" {
-  backend = "azurerm"
+  backend   = "azurerm"
+  workspace = terraform.workspace
 
   config = {
     resource_group_name  = "rg-core-deploy"
     storage_account_name = var.state_storage_account_name
     container_name       = "tfstate"
-    key                  = "env:/${terraform.workspace}/phase1-env.tfstate"
+    key                  = "phase1-env.tfstate"
   }
 }

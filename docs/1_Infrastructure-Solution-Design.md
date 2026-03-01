@@ -240,15 +240,17 @@ terraform/
 
 ## CI/CD Pipeline
 
-GitHub Actions workflow mirrors the phases:
+Eight GitHub Actions workflows (`infra-validate`, `infra-core-dev`, `infra-core-prod`, `infra-workload-dev`, `infra-workload-prod`, `app-pr`, `app-dev`, `app-prod`) mirror the phased deployment:
 
-1. **Validate** — `fmt -check` + `validate` on both phases.
-2. **Plan Phase 1** — hosted runner, OIDC auth, `terraform plan`.
-3. **Apply Phase 1** — on merge to main.
-4. **Plan/Apply Phase 2** — self-hosted runner from Phase 1, private-network work.
+1. **Validate** (`infra-validate.yml`) — `fmt -check` + `tflint` + `validate` on all phases. Triggers on feature branch pushes and PRs.
+2. **Core infra** — plan-only on dev merge (`infra-core-dev`), plan → approval → apply on main merge (`infra-core-prod`).
+3. **Workload infra** — sequential phase1/env then phase3/env. Auto-apply on dev (`infra-workload-dev`), TWO separate approval gates on prod (`infra-workload-prod`).
+4. **App** — test + build-check on PRs (`app-pr`), test + build + push + webhook deploy on dev (`app-dev`), test + build + push → approval → webhook deploy on prod (`app-prod`).
 
-OIDC federation = no stored secrets in GitHub. SP trusts tokens from repo branch/environment. Document Entra ID app registration + federated credential setup in README.
+Deployment uses Kudu container deployment webhooks (stored in Key Vault) rather than `az functionapp restart`, which ensures the Function App actually pulls the latest image digest.
+
+OIDC federation = no stored secrets in GitHub. SP trusts tokens from repo branch/environment. Additional secret: `RUNNER_MANAGEMENT_PAT` (GitHub PAT for runner registration).
 
 ---
 
-*Next: module interfaces, then get Phase 1 standing up.*
+*Updated to reflect actual implementation.*

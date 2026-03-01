@@ -43,7 +43,7 @@ Subnets are divided into **fixed** (one per VNet, created by `modules/vnet`) and
 
 | Subnet Name | CIDR | Usable IPs | Delegation | Purpose | NAT Gateway |
 |-------------|------|------------|------------|---------|-------------|
-| `snet-runner` | `10.100.128.0/24` | 251 | None | Self-hosted GitHub Actions runner VM (`vm-runner-core`) | **Yes** |
+| `snet-runner` | `10.100.128.0/24` | 251 | None | Self-hosted GitHub Actions runner VM (`vm-runner-core`). Ubuntu 22.04, provisioned by Terraform, configured via Custom Script Extension (`setup-runner.sh`). | **Yes** |
 | `snet-jumpbox` | `10.100.129.0/27` | 27 | None | Windows 11 jump box for developer connectivity and diagnostics | No |
 | `snet-apim` | `10.100.129.32/27` | 27 | `Microsoft.ApiManagement/service` | API Management (internal VNet mode, Developer tier) | No |
 | `snet-shared-pe` | `10.100.130.0/24` | 251 | None | Private Endpoints for shared resources (ACR PE only) | No |
@@ -63,7 +63,6 @@ Stamp subnets occupy the lower address range of `10.100.0.0/16`. Subnet names in
 |-------------|-------|-----------|------------|
 | dev | 1 | `10.100.0.0/24` | `10.100.1.0/24` |
 | dev | 2 | `10.100.2.0/24` | `10.100.3.0/24` |
-| test | 1 | `10.100.4.0/24` | `10.100.5.0/24` |
 | prod | 1 | `10.100.6.0/24` | `10.100.7.0/24` |
 
 ### Subnet Configuration Notes
@@ -71,7 +70,7 @@ Stamp subnets occupy the lower address range of `10.100.0.0/16`. Subnet names in
 - **PE subnets** (`snet-stamp-<N>-pe`, `snet-shared-pe`): `private_endpoint_network_policies = "Enabled"` to allow NSG enforcement on Private Endpoint NICs.
 - **ASP subnets** (`snet-stamp-<N>-asp`): Delegation to `Microsoft.Web/serverFarms` is mandatory for App Service VNet integration. Function App **outbound** traffic originates from this subnet; **inbound** traffic arrives at the Function App's Private Endpoint in the stamp PE subnet.
 - **APIM subnet** (`snet-apim`): Delegation to `Microsoft.ApiManagement/service` is mandatory. `/27` is the recommended minimum for Developer tier.
-- **Runner subnet** (`snet-runner`): No delegation. Hosts `vm-runner-core`, the self-hosted GitHub Actions runner VM. Entra ID SSH login via `AADSSHLoginForLinux` extension; inbound SSH is permitted from `snet-jumpbox` only. The runner agent is registered with GitHub manually after VM provisioning.
+- **Runner subnet** (`snet-runner`): No delegation. Hosts `vm-runner-core`, the self-hosted GitHub Actions runner VM (Ubuntu 22.04). Entra ID SSH login via `AADSSHLoginForLinux` extension; inbound SSH is permitted from `snet-jumpbox` only. The runner agent is registered automatically via Custom Script Extension (`setup-runner.sh`), which installs Docker, Azure CLI, Node.js 20, and the GitHub Actions runner agent as a systemd service.
 - **Jump box subnet** (`snet-jumpbox`): No delegation. Hosts a single Windows 11 VM with a public IP for RDP access. Entra ID authentication via the `AADLoginForWindows` VM extension. `/27` is sufficient — only one VM is expected.
 
 ---
@@ -417,12 +416,12 @@ These role assignments are provisioned in `modules/workload-stamp/identity.tf` a
 
 ### NSG Flow Logs
 
-All NSGs should have flow logs enabled and streaming to the Log Analytics Workspace. This provides:
+> **Note:** NSG flow logs are **disabled** (`flow_logs_enabled = false`). Azure blocked new NSG flow log creation from June 2025. The infrastructure in `modules/vnet` and `modules/workload-stamp-subnet` retains the flow log resource definitions but they are gated behind the `flow_logs_enabled` flag and currently inactive.
+
+When re-enabled, flow logs would provide:
 - Audit trail of all allowed and denied flows
 - Troubleshooting data for connectivity issues during deployment
 - Input for Network Watcher Traffic Analytics
-
-This is configured in the `modules/vnet` module when a Log Analytics Workspace ID is supplied.
 
 ---
 
