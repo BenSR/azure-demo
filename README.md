@@ -7,55 +7,67 @@ A fully private, mTLS-secured Azure Function API deployed via Terraform and GitH
 ## Table of Contents
 
 1. [Architecture](#architecture)
-2. [Prerequisites](#prerequisites)
-3. [Setup & Deployment](#setup--deployment)
+2. [CI/CD Methodology](#cicd-methodology)
+3. [Prerequisites](#prerequisites)
+4. [Setup & Deployment](#setup--deployment)
    - [Bootstrap](#1-bootstrap-manual)
    - [Core Infrastructure](#2-core-infrastructure-phase1core)
    - [Workload Infrastructure](#3-workload-infrastructure-phase1env--phase3)
    - [Application Deployment](#4-application-deployment)
-4. [OIDC Authentication](#oidc-authentication)
-5. [Teardown](#teardown)
-6. [Assumptions](#assumptions)
-7. [Estimated Azure Costs](#estimated-azure-costs)
-8. [AI Usage & Critique](#ai-usage--critique)
+5. [OIDC Authentication](#oidc-authentication)
+6. [Teardown](#teardown)
+7. [Assumptions](#assumptions)
+8. [Estimated Azure Costs](#estimated-azure-costs)
+9. [AI Usage & Critique](#ai-usage--critique)
 
 ---
 
 ## Architecture
 
-### Diagram
+### Design Overview
 
-```
-                        ┌─────────────────────────────────────────────────────────────────┐
-                        │  vnet-core (10.100.0.0/16)                                      │
-                        │                                                                 │
-   Internet ─RDP─────► │  ┌──────────────┐    SSH    ┌──────────────┐                   │
-                        │  │  snet-jumpbox│──────────►│  snet-runner │◄──── NAT GW ────► │─► Internet
-                        │  │  vm-jumpbox  │           │  vm-runner   │    (GitHub/ARM)   │
-                        │  └──────┬───────┘           └──────────────┘                   │
-                        │         │ HTTPS                                                 │
-                        │         ▼                                                       │
-                        │  ┌──────────────┐  HTTPS   ┌────────────────────────────────┐  │
-                        │  │  snet-apim   │─────────►│  snet-stamp-<env>-<N>-pe       │  │
-                        │  │  APIM        │ (mTLS)   │  Function App PE               │  │
-                        │  │  (internal)  │          │  Storage PEs (blob/file/tbl/q) │  │
-                        │  └──────────────┘          │  Key Vault PE                  │  │
-                        │                            └────────────────────────────────┘  │
-                        │                                       ▲                        │
-                        │                            ┌──────────┴─────────────────────┐  │
-                        │                            │  snet-stamp-<env>-<N>-asp      │  │
-                        │                            │  Function App (VNet integration)│  │
-                        │                            └────────────────────────────────┘  │
-                        │                                                                 │
-                        │  ┌──────────────┐                                              │
-                        │  │  snet-shared-pe                                             │
-                        │  │  ACR PE      │                                              │
-                        │  └──────────────┘                                              │
-                        └─────────────────────────────────────────────────────────────────┘
+The solution is structured around four tiers of Azure resource groups, each with a distinct lifecycle and sharing boundary:
 
-  Azure Key Vault  ◄── Private Endpoint (per stamp)
-  App Insights / Log Analytics Workspace  ◄── VNet-integrated telemetry
-  Azure Monitor Alert Rules
+- **Bootstrap (`rg-core-deploy`)** — created manually before any Terraform runs. Holds the remote state storage account and the OIDC service principal used by GitHub Actions. Not managed by Terraform.
+- **Core (`rg-core`)** — shared platform infrastructure deployed once, environment-agnostic. Hosts the VNet, ACR, Log Analytics, NAT Gateway, jump box, and self-hosted runner.
+- **Environment-shared (`rg-wkld-shared-{env}`)** — one per environment (`dev`, `prod`). Contains APIM, which is the single internal entry point for all stamps in that environment.
+- **Stamp (`rg-wkld-stamp-{N}-{env}`)** — one per stamp per environment. Each stamp is a self-contained workload unit: Function App, Storage Account, Key Vault, and Application Insights.
+
+**Environments** are managed via Terraform workspaces (`dev`, `prod`). Workspace selection drives which environment-scoped resources are planned and applied — core infrastructure is workspace-independent and deployed once.
+
+**Stamps** are instances of the workload module within an environment. Multiple stamps can be declared per environment via `.tfvars`, and APIM load-balances across them. This design enables horizontal scaling and, with a full hub-spoke network topology, could support multi-region resilience — each stamp deployed to a different Azure region. Hub-spoke is not implemented here (it is out of scope for this assessment), so all stamps currently share a single VNet.
+
+### Logical Architecture
+
+```mermaid
+graph TB
+    subgraph rg_deploy["rg-core-deploy · Pre-Terraform Bootstrap (manual)"]
+        tfstate["Terraform State\nStorage Account"]
+        oidc["OIDC Service Principal\nGitHub Actions auth"]
+    end
+
+    subgraph rg_core["rg-core · Shared Platform (deployed once, all environments)"]
+        vnet["VNet · vnet-core  10.100.0.0/16\nSubnets · NSGs · NAT Gateway\nPrivate DNS Zones"]
+        acr["Container Registry\n(private endpoint)"]
+        law["Log Analytics Workspace"]
+        vms["Jump Box VM · Self-hosted Runner VM"]
+    end
+
+    subgraph rg_env["rg-wkld-shared-{env} · Per-Environment  (one per Terraform workspace)"]
+        apim["API Management\nInternal VNet mode · mTLS termination\nLoad-balances across stamps"]
+    end
+
+    subgraph rg_stamp["rg-wkld-stamp-{N}-{env} · Per-Stamp Workload  (N stamps × M environments)"]
+        fa["Function App\nContainerised Python · VNet-integrated"]
+        kv["Key Vault\nCerts · Secrets · Private Endpoint"]
+        st["Storage Account\nblob · file · table · queue PEs"]
+        ai["Application Insights · Alerts"]
+    end
+
+    rg_deploy -->|"remote state read by all roots"| rg_core
+    rg_core -->|"VNet · ACR · LAW · DNS\nconsumed via remote_state"| rg_env
+    rg_core -->|"Stamp subnet pairs\nallocated per stamp"| rg_stamp
+    rg_env -->|"APIM backend\nper stamp"| rg_stamp
 ```
 
 ### Components
@@ -89,6 +101,72 @@ modules/
 ├── workload-stamp/
 └── workload-stamp-subnet/
 ```
+
+---
+
+## CI/CD Methodology
+
+Three GitHub Actions pipelines cover infrastructure and application delivery, authenticated to Azure via OIDC throughout. The deployment is split into three phases that must run in order — the separation is not arbitrary; it is driven by a network bootstrapping constraint.
+
+### Why Three Phases?
+
+Phase 1 creates the self-hosted runner VM (`vm-runner-core`) and injects it into `vnet-core`. Phase 3 must run *on* that runner because it performs data-plane operations against private endpoints — Key Vault secret writes, APIM configuration — that are unreachable from GitHub-hosted runners outside the VNet. You cannot run Phase 3 before Phase 1 has provisioned the runner it depends on.
+
+Terraform also cannot plan Phase 3 resources from outside the VNet: it calls `ListKeys` and lists blob containers on locked-down Storage Accounts during `terraform plan`, which returns 403 from a public IP. Splitting the phases keeps each root's plan/apply runnable on the appropriate runner type.
+
+```
+Phase 1 (GitHub-hosted runner)
+  → Provisions VNet, self-hosted runner VM, core infra, workload infra
+
+Phase 2 (Manual)
+  → Runner VM registered with GitHub Actions
+  → Any other one-time steps not automatable pre-runner
+
+Phase 3 (Self-hosted runner — inside VNet)
+  → Writes certs/secrets to Key Vault
+  → Configures APIM backends and mTLS policy
+  → Deploys Monitor alerts and availability tests
+```
+
+### Phase 1 — Infrastructure (`phase1/core` + `phase1/env`)
+
+Runs on GitHub-hosted runners. Only requires Azure ARM API access (Terraform control plane) — no private endpoint connectivity needed.
+
+| Sub-phase | Root | What it deploys | Workspace |
+|-----------|------|-----------------|-----------|
+| 1a — Core | `terraform/phase1/core/` | VNet, ACR, Log Analytics, NAT Gateway, Private DNS, jump box, runner VM | None (deployed once) |
+| 1b — Workload | `terraform/phase1/env/` | APIM, Function App, Storage Account, Key Vault, App Insights, Private Endpoints | `dev` / `prod` |
+
+`phase1/core` is workspace-independent and deployed once shared across all environments. `phase1/env` is workspace-driven — `terraform workspace select dev` targets the dev environment, `prod` targets production. Core outputs (VNet, ACR, Log Analytics IDs) are consumed by `phase1/env` via `terraform_remote_state`.
+
+### Phase 2 — Manual Steps
+
+After Phase 1 completes, the following one-time manual step is required before Phase 3 can run:
+
+1. **Create a GitHub PAT** with `repo` scope and add it as the repository secret `RUNNER_PAT`. This token is used by the runner VM to register itself with GitHub Actions.
+
+This phase exists as a named gate so that future manual requirements have a clear home and the overall sequence remains explicit.
+
+### Phase 3 — Data-Plane Operations (`phase3`)
+
+Runs on the self-hosted runner inside `vnet-core`. Reads remote state from both `phase1/core` and `phase1/env` to obtain resource IDs and outputs.
+
+| File | Purpose |
+|------|---------|
+| `secrets.tf` | Writes CA certificate and client certificate into each stamp's Key Vault (data-plane write, requires VNet access) |
+| `apim-config.tf` | Creates APIM backends (one per stamp), API definition, operations, and mTLS client-cert validation policy |
+| `alerts.tf` | Azure Monitor metric alerts, App Insights availability tests, Action Group |
+
+### Branch Model & Environment Promotion
+
+```
+feature/xyz ──PR──► dev ──PR──► main
+                     │              │
+               workspace: dev  workspace: prod
+               auto-deploy     gated (approval required)
+```
+
+Changes flow through `dev` first (auto-applied on merge) then are promoted to `prod` via a deliberate PR from `dev` to `main`. The `main` branch triggers plan → human approval → apply for both infrastructure and application pipelines. Plan files are uploaded to the `tfplans` blob container between the plan and apply steps so the apply executes the exact plan the reviewer inspected.
 
 ---
 
@@ -126,6 +204,7 @@ After running, set the following GitHub repository secrets:
 | `ARM_TENANT_ID` | Azure tenant ID |
 | `ARM_SUBSCRIPTION_ID` | Azure subscription ID |
 | `TF_STATE_STORAGE_ACCOUNT` | State storage account name |
+| `RUNNER_PAT` | GitHub Personal Access Token with `repo` scope, used by the runner VM to register itself with GitHub Actions |
 
 ### 2. Core Infrastructure (`phase1/core`)
 
