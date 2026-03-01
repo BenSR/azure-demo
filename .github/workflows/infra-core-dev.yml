@@ -9,6 +9,7 @@ on:
     paths:
       - "terraform/phase1/core/**"
       - "terraform/modules/**"
+      - "scripts/setup-runner.sh"
       - ".github/workflows/infra-core-dev.yml"
 
 concurrency:

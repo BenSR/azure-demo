@@ -123,7 +123,7 @@ resource "azurerm_storage_container" "scripts" {
 }
 
 resource "azurerm_storage_blob" "runner_setup" {
-  name                   = "setup-runner.sh"
+  name                   = "setup-runner-${filemd5(local.runner_setup_script)}.sh"
   storage_account_name   = var.deploy_storage_account_name
   storage_container_name = azurerm_storage_container.scripts.name
   type                   = "Block"
@@ -155,12 +155,12 @@ resource "azurerm_virtual_machine_extension" "runner_setup" {
 
   settings = jsonencode({
     fileUris = [
-      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/setup-runner.sh"
+      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/setup-runner-${filemd5(local.runner_setup_script)}.sh"
     ]
   })
 
   protected_settings = jsonencode({
-    commandToExecute   = "RUNNER_MANAGEMENT_PAT='${var.runner_management_pat}' bash setup-runner.sh # ${filemd5(local.runner_setup_script)}"
+    commandToExecute   = "RUNNER_MANAGEMENT_PAT='${var.runner_management_pat}' bash setup-runner-${filemd5(local.runner_setup_script)}.sh"
     storageAccountName = var.deploy_storage_account_name
     storageAccountKey  = data.azurerm_storage_account.deploy.primary_access_key
   })
