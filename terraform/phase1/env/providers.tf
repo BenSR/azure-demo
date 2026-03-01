@@ -12,17 +12,7 @@ terraform {
     }
   }
 
-  # Backend config is supplied at init time via -backend-config flags or a
-  # backend.hcl file so that secrets never appear in source control.
-  #
-  # Example backend.hcl:
-  #   resource_group_name  = "rg-core-deploy"
-  #   storage_account_name = "<your-state-storage-account>"
-  #   container_name       = "tfstate"
-  #   key                  = "phase1-env.tfstate"
-  #
-  # Example init command:
-  #   terraform init -backend-config=backend.hcl
+
   backend "azurerm" {}
 }
 
@@ -41,5 +31,4 @@ provider "azurerm" {
 }
 
 provider "azuread" {
-  tenant_id = var.tenant_id
 }
