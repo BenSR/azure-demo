@@ -161,7 +161,7 @@ resource "azurerm_virtual_machine_extension" "runner_setup" {
   })
 
   protected_settings = jsonencode({
-    commandToExecute   = "bash setup-runner.sh '${var.runner_management_pat}' # ${filemd5(local.runner_setup_script)}"
+    commandToExecute   = "RUNNER_MANAGEMENT_PAT='${var.runner_management_pat}' bash setup-runner.sh # ${filemd5(local.runner_setup_script)}"
     storageAccountName = var.deploy_storage_account_name
     storageAccountKey  = data.azurerm_storage_account.deploy.primary_access_key
   })
