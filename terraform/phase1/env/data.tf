@@ -2,6 +2,8 @@
 # Reads the outputs of the core root module.  Core is deployed once (not
 # workspace-based), so the state key is always "phase1-core.tfstate".
 
+data "azuread_client_config" "current" {}
+
 data "terraform_remote_state" "core" {
   backend = "azurerm"
 

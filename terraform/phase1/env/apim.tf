@@ -33,6 +33,13 @@ resource "azurerm_api_management" "this" {
 }
 
 # ─── APIM — diagnostic settings ───────────────────────────────────────────────
+# Import block handles the case where the diagnostic setting was created
+# outside of Terraform state (e.g. after a partial apply).  Safe to leave in
+# place — once the resource is in state this block is a no-op.
+import {
+  to = azurerm_monitor_diagnostic_setting.apim
+  id = "${azurerm_api_management.this.id}|diag-apim-${local.name_suffix}"
+}
 
 resource "azurerm_monitor_diagnostic_setting" "apim" {
   name                       = "diag-apim-${local.name_suffix}"
