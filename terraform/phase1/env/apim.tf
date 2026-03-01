@@ -6,7 +6,6 @@
 # NOTE: The NSG rules required for APIM to provision (apim_in_allow_mgmt,
 # apim_in_allow_lb_health, apim_in_allow_vnet_https) are applied by
 # phase1/core and are guaranteed to exist before this root module runs.
-# No depends_on is needed here.
 
 resource "azurerm_api_management" "this" {
   name                = "apim-${local.name_suffix}"
