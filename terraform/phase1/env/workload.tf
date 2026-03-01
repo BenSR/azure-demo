@@ -28,7 +28,7 @@ module "workload_stamp" {
   resource_group_name = azurerm_resource_group.stamp[each.key].name
   location            = each.value.location
 
-  asp_sku = "P1v3"
+  asp_sku = "B1"
 
   # Single Function App per stamp.
   # Name: func-<workload>-<stamp_name>-api-<env>
