@@ -2,8 +2,8 @@
 # dev.tfvars — dev workspace overrides for phase3
 #
 # Usage:
-#   terraform -chdir=terraform/phase3 workspace select dev
-#   terraform -chdir=terraform/phase3 apply \
+#   terraform -chdir=terraform/phase3/env workspace select dev
+#   terraform -chdir=terraform/phase3/env apply \
 #     -var-file=terraform.tfvars -var-file=dev.tfvars
 #
 # stamp_name values must match the stamps deployed by phase1/env in the dev
