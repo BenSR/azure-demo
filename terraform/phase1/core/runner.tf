@@ -141,7 +141,6 @@ resource "azurerm_storage_blob" "runner_setup" {
 #
 # The runner_management_pat (also in protected_settings) lets setup-runner.sh
 # exchange for a fresh 1-hour GitHub registration token at execution time.
-#
 # commandToExecute includes the script's MD5 hash as a shell comment.  It is
 # ignored at runtime but ensures Terraform detects a settings change (and
 # therefore re-triggers the extension) whenever setup-runner.sh is modified.

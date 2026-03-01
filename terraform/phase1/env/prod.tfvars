@@ -13,7 +13,7 @@
 stamps = [
   {
     stamp_name = "1"
-    location   = "uksouth"
+    location   = "northeurope"
     image_name = "wkld-api"
     image_tag  = "latest"
   },

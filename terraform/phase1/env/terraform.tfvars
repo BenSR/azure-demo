@@ -23,7 +23,7 @@ tenant_id       = "00000000-0000-0000-0000-000000000000"
 
 # ─── Placement ───────────────────────────────────────────────────────────────
 
-location = "uksouth"
+location = "northeurope"
 
 # ─── Remote state — phase1/core ───────────────────────────────────────────────
 # The storage account that holds Terraform state (in rg-wkld-deploy).
