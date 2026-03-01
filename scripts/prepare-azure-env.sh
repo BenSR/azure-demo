@@ -11,9 +11,11 @@
 #   4. Create an App Registration / Service Principal for GitHub Actions.
 #   5. Add OIDC federated credentials for each GitHub Actions environment.
 #   6. Assign roles: Owner on subscription + Storage Blob Data Contributor on SA.
-#   7. Assign the Entra ID "Directory Readers" role so Terraform can resolve
+#   7. Assign the Entra ID "Application Developer" role so Terraform can create
+#      App Registrations via the azuread provider.
+#   8. Assign the Entra ID "Directory Readers" role so Terraform can resolve
 #      users and groups via the azuread provider.
-#   8. Print the GitHub Actions secrets that need to be configured.
+#   9. Print the GitHub Actions secrets that need to be configured.
 #
 # Note: the scripts container and setup-runner.sh blob are managed by Terraform
 # (runner.tf), not this script.  Terraform runs in GitHub Actions which has
@@ -373,6 +375,66 @@ assign_roles() {
   fi
 }
 
+# ─── Entra ID Application Developer role ─────────────────────────────────────
+# Terraform's azuread provider needs permission to create and manage App
+# Registrations (azuread_application resources).  "Application Developer" is a
+# built-in Entra ID directory role (roleTemplateId
+# cf1c38e5-3621-4004-a7cb-879624dced7c) that allows the SP to create and
+# manage app registrations it owns — without granting the broader
+# Application.ReadWrite.All permission.
+assign_application_developer() {
+  header "Entra ID — Application Developer role"
+
+  local role_template_id="cf1c38e5-3621-4004-a7cb-879624dced7c"
+
+  # Activate the directory role if it hasn't been used in this tenant before.
+  local role_object_id
+  role_object_id=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/directoryRoles?\$filter=roleTemplateId eq '${role_template_id}'" \
+    --query "value[0].id" \
+    --output tsv 2>/dev/null || true)
+
+  if [[ -z "$role_object_id" || "$role_object_id" == "None" ]]; then
+    info "Activating Application Developer role ..."
+    role_object_id=$(az rest \
+      --method POST \
+      --uri "https://graph.microsoft.com/v1.0/directoryRoles" \
+      --body "{\"roleTemplateId\": \"${role_template_id}\"}" \
+      --query "id" \
+      --output tsv)
+    success "Activated Application Developer role (objectId: ${role_object_id})"
+  else
+    success "Application Developer role already activated (objectId: ${role_object_id})"
+  fi
+
+  # Check whether the SP is already a member.
+  local already_member
+  already_member=$(az rest \
+    --method GET \
+    --uri "https://graph.microsoft.com/v1.0/directoryRoles/${role_object_id}/members" \
+    --query "value[?id=='${SP_OBJECT_ID}'].id | [0]" \
+    --output tsv 2>/dev/null || true)
+
+  if [[ -n "$already_member" && "$already_member" != "None" ]]; then
+    success "Service Principal already has Application Developer — skipping."
+  else
+    info "Assigning Application Developer to SP ${SP_OBJECT_ID} ..."
+    local add_output
+    if add_output=$(az rest \
+      --method POST \
+      --uri "https://graph.microsoft.com/v1.0/directoryRoles/${role_object_id}/members/\$ref" \
+      --body "{\"@odata.id\": \"https://graph.microsoft.com/v1.0/directoryObjects/${SP_OBJECT_ID}\"}" \
+      --output none 2>&1); then
+      success "Assigned Application Developer to the deployment Service Principal."
+    elif echo "$add_output" | grep -q "already exist"; then
+      success "Service Principal already has Application Developer — skipping."
+    else
+      die "Failed to assign Application Developer: ${add_output}"
+    fi
+  fi
+}
+
 # ─── Entra ID Directory Readers role ──────────────────────────────────────────
 # Terraform's azuread provider needs directory read access to resolve users,
 # groups, and service principals (data sources such as azuread_user,
@@ -506,6 +568,7 @@ main() {
   create_service_principal
   add_federated_credentials
   assign_roles
+  assign_application_developer
   assign_directory_reader
   print_summary
 

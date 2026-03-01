@@ -17,7 +17,7 @@ resource "azuread_application" "func_api" {
   display_name = "app-func-${local.workload}-${each.key}-api-${local.environment}"
 
   identifier_uris = [
-    "api://func-${local.workload}-${each.key}-api-${local.environment}"
+    "api://${data.azuread_client_config.current.tenant_id}/func-${local.workload}-${each.key}-api-${local.environment}"
   ]
 }
 
