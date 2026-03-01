@@ -43,7 +43,12 @@ locals {
 
   client_cert_thumbprint = upper(sha1(base64decode(local._client_cert_b64)))
 
-  # Primary stamp key (lowest numeric stamp) — default backend for the API
-  # policy.  Extend with a backend pool or routing header for multi-stamp.
-  primary_stamp_key = tolist(sort(keys(local.stamps_map)))[0]
+  # Sorted stamp keys — deterministic ordering for the load-balancing policy
+  # and for deriving primary_stamp_key without a redundant sort call.
+  sorted_stamp_keys = sort(keys(local.stamps_map))
+  stamp_count       = length(local.stamps_map)
+
+  # Primary stamp key (lowest numeric stamp) — used for the health-check
+  # operation, which bypasses mTLS and always routes to a single backend.
+  primary_stamp_key = local.sorted_stamp_keys[0]
 }
