@@ -22,6 +22,6 @@ resource "azuread_application" "func_api" {
 }
 
 resource "azuread_service_principal" "func_api" {
-  for_each  = azuread_application.func_api
-  client_id = each.value.client_id
+  for_each  = local.stamps_map
+  client_id = azuread_application.func_api[each.key].client_id
 }
