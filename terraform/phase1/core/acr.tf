@@ -5,7 +5,7 @@
 #   e.g. acrcore09d0073b — globally unique per subscription, deterministic.
 
 resource "azurerm_container_registry" "this" {
-  name                = "acr${local.name_suffix}${substr(replace(var.subscription_id, "-", ""), 0, 8)}"
+  name                = "acr${local.name_suffix}${substr(replace(data.azurerm_client_config.current.subscription_id, "-", ""), 0, 8)}"
   resource_group_name = azurerm_resource_group.core.name
   location            = var.location
   sku                 = "Premium"
