@@ -1,10 +1,3 @@
-# ─── Provider / subscription ─────────────────────────────────────────────────
-
-variable "subscription_id" {
-  type        = string
-  description = "Azure Subscription ID. Set via ARM_SUBSCRIPTION_ID env var in CI."
-}
-
 # ─── Placement ───────────────────────────────────────────────────────────────
 
 variable "location" {
