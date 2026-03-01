@@ -101,21 +101,50 @@ resource "azurerm_virtual_machine_extension" "runner_aad_ssh" {
   tags = local.tags
 }
 
+# ─── Scripts container + setup script blob ───────────────────────────────────
+# Terraform uploads setup-runner.sh from the local repo to blob storage.
+# This runs in GitHub Actions, which has data-plane access to the storage
+# account (it already reads/writes Terraform state there).  The bootstrap
+# script (prepare-azure-env.sh) intentionally skips this — it runs outside
+# the network and can only make management-plane calls.
+#
+# The blob's content hash is baked into commandToExecute so that updating
+# setup-runner.sh in the repo automatically triggers the CSE to re-run on the
+# next terraform apply, without any manual intervention.
+
+locals {
+  runner_setup_script = "${path.root}/../../../scripts/setup-runner.sh"
+}
+
+resource "azurerm_storage_container" "scripts" {
+  name                  = "scripts"
+  storage_account_name  = var.deploy_storage_account_name
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_blob" "runner_setup" {
+  name                   = "setup-runner.sh"
+  storage_account_name   = var.deploy_storage_account_name
+  storage_container_name = azurerm_storage_container.scripts.name
+  type                   = "Block"
+  source                 = local.runner_setup_script
+  content_type           = "text/x-shellscript"
+}
+
 # ─── Custom Script Extension — runner setup ───────────────────────────────────
-# Downloads setup-runner.sh from the scripts container of the state storage
-# account and executes it.
+# Downloads setup-runner.sh from blob storage and executes it.
 #
-# fileUris contains the plain HTTPS blob URL (no SAS); the storage account
-# name and key are passed in protected_settings so Azure encrypts them at rest
-# and omits them from activity logs.  The key is read at plan time via the
-# azurerm_storage_account data source — no extra GitHub secret required.
+# fileUris contains the plain HTTPS blob URL; the storage account name and key
+# go in protected_settings so Azure encrypts them at rest and omits them from
+# activity logs.  The key is read at plan time via the azurerm_storage_account
+# data source — no extra GitHub secret required.
 #
-# The runner_management_pat (also in protected_settings) is used by the script
-# to exchange for a fresh 1-hour GitHub registration token at execution time.
+# The runner_management_pat (also in protected_settings) lets setup-runner.sh
+# exchange for a fresh 1-hour GitHub registration token at execution time.
 #
-# To force a re-run (e.g. re-register after a runner goes offline), update the
-# runner_management_pat secret in GitHub and re-apply Terraform — the changed
-# protected_settings value triggers the extension to re-execute.
+# commandToExecute includes the script's MD5 hash as a shell comment.  It is
+# ignored at runtime but ensures Terraform detects a settings change (and
+# therefore re-triggers the extension) whenever setup-runner.sh is modified.
 
 resource "azurerm_virtual_machine_extension" "runner_setup" {
   name                       = "runner-setup"
@@ -132,10 +161,12 @@ resource "azurerm_virtual_machine_extension" "runner_setup" {
   })
 
   protected_settings = jsonencode({
-    commandToExecute  = "bash setup-runner.sh '${var.runner_management_pat}'"
+    commandToExecute   = "bash setup-runner.sh '${var.runner_management_pat}' # ${filemd5(local.runner_setup_script)}"
     storageAccountName = var.deploy_storage_account_name
     storageAccountKey  = data.azurerm_storage_account.deploy.primary_access_key
   })
+
+  depends_on = [azurerm_storage_blob.runner_setup]
 
   tags = local.tags
 }
