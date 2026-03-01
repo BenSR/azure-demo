@@ -9,7 +9,7 @@
 # GitHub Actions secrets required:
 #   ARM_CLIENT_ID       = (auto-detected)
 #   ARM_TENANT_ID       = (auto-detected via OIDC)
-#   ARM_SUBSCRIPTION_ID = var.subscription_id
+
 
 data "azurerm_client_config" "current" {}
 
