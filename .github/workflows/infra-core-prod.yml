@@ -63,7 +63,6 @@ jobs:
           set -o pipefail
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
-            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
             -var="runner_management_pat=${{ secrets.RUNNER_MANAGEMENT_PAT }}" \
             -var="deploy_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -out=/tmp/tfplan-core \

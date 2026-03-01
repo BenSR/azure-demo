@@ -72,8 +72,6 @@ jobs:
           terraform -chdir=${{ env.ENV_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var-file=prod.tfvars \
-            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
-            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -out=/tmp/tfplan-env-prod \
             -no-color 2>&1 | tee /tmp/plan-output.txt
@@ -152,8 +150,6 @@ jobs:
           terraform -chdir=${{ env.PH3_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var-file=prod.tfvars \
-            -var="subscription_id=${{ secrets.ARM_SUBSCRIPTION_ID }}" \
-            -var="tenant_id=${{ secrets.ARM_TENANT_ID }}" \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -out=/tmp/tfplan-phase3-prod \
             -no-color 2>&1 | tee /tmp/plan-output.txt
