@@ -17,6 +17,11 @@ output "api_id" {
   description = "Workload API resource ID in APIM."
 }
 
+output "debug_api_policy_xml" {
+  value       = local._debug_api_policy_xml
+  description = "DEBUG: Computed API policy XML for troubleshooting."
+}
+
 output "api_path" {
   value       = "https://${trimprefix(local.env.apim_gateway_url, "https://")}/${azurerm_api_management_api.wkld.path}"
   description = "Full APIM URL prefix for the workload API (append the operation url_template to call an operation)."

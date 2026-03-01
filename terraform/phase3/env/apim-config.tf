@@ -22,6 +22,37 @@ locals {
       "        </when>",
     ])
   ])
+
+  _debug_api_policy_xml = <<-XML
+    <policies>
+      <inbound>
+        <base />
+        <validate-client-certificate
+          validate-revocation="false"
+          validate-trust="false"
+          validate-not-before="true"
+          validate-not-after="true"
+          ignore-error="false">
+          <identities>
+            <identity thumbprint="{{${azurerm_api_management_named_value.client_cert_thumbprint.name}}}" />
+          </identities>
+        </validate-client-certificate>
+        <set-variable name="stamp-index" value="@(new Random().Next(${local.stamp_count}))" />
+        <choose>
+${local._apim_lb_when_blocks}
+        </choose>
+      </inbound>
+      <backend>
+        <base />
+      </backend>
+      <outbound>
+        <base />
+      </outbound>
+      <on-error>
+        <base />
+      </on-error>
+    </policies>
+  XML
 }
 
 # ─── APIM — Named Values ──────────────────────────────────────────────────────
@@ -106,9 +137,10 @@ resource "azurerm_api_management_api_operation" "wkld" {
 # ─── APIM — API Policy (mTLS + round-robin load balancing) ────────────────────
 # Inbound pipeline:
 #   1. validate-client-certificate — enforces mTLS; rejects any caller that
-#      does not present the client certificate identified by the Named Value
+#      does not present the client certificate matching the Named Value
 #      thumbprint.  validate-trust and validate-revocation are disabled
 #      (self-signed CA in assessment; enable for production PKI).
+#      ignore-error="false" ensures the request is rejected on validation failure.
 #   2. set-variable stamp-index — picks a random integer in [0, stamp_count)
 #      to select a backend for this request (uniform random load balancing).
 #   3. choose/when — for each stamp index, acquires a short-lived Entra ID JWT
@@ -148,11 +180,9 @@ resource "azurerm_api_management_api_policy" "wkld" {
           validate-trust="false"
           validate-not-before="true"
           validate-not-after="true"
-          certificate-is-required="true">
+          ignore-error="false">
           <identities>
-            <identity
-              validate-thumbprint="true"
-              thumbprint="{{${azurerm_api_management_named_value.client_cert_thumbprint.name}}}" />
+            <identity thumbprint="{{${azurerm_api_management_named_value.client_cert_thumbprint.name}}}" />
           </identities>
         </validate-client-certificate>
         <!--
