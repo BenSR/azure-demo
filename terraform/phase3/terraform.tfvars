@@ -1,7 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # phase3 — shared non-secret configuration
 #
+# Values that are the SAME across all workspaces (dev, prod).
+# Workspace-specific stamp lists live in the per-workspace files:
 
+
+# ─── Remote state ────────────────────────────────────────────────────────────
+
+state_storage_account_name = "<your-state-storage-account>"
 
 # ─── APIM — API Operations ───────────────────────────────────────────────────
 # Default operations expose a health-check GET and a generic POST endpoint.
