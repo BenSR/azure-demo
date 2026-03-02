@@ -17,7 +17,7 @@ data "terraform_remote_state" "core" {
 
 # ─── Remote state — phase1/env ────────────────────────────────────────────────
 # Workspace-scoped — the key path matches the workspace used by phase1/env.
-# Phase 3 must run in the same workspace as the phase1/env deployment it
+# Phase 2 must run in the same workspace as the phase1/env deployment it
 # targets (e.g. workspace "dev" reads the dev APIM, stamps, and KV outputs).
 
 data "terraform_remote_state" "env" {

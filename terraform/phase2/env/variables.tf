@@ -16,14 +16,14 @@ variable "state_storage_account_name" {
 
 # ─── Workload stamps ─────────────────────────────────────────────────────────
 # Must match the stamps deployed by phase1/env in the same workspace.
-# Phase 3 uses stamp_name to construct resource names and to look up outputs
+# Phase 2 uses stamp_name to construct resource names and to look up outputs
 # from the phase1/env remote state (key_vault_ids, function_app_hostnames, etc.).
 
 variable "stamps" {
   type = list(object({
     stamp_name = string
   }))
-  description = "List of stamp numbers to configure in Phase 3. stamp_name must be a numeric string (e.g. \"1\", \"2\") matching a stamp deployed by phase1/env."
+  description = "List of stamp numbers to configure in Phase 2. stamp_name must be a numeric string (e.g. \"1\", \"2\") matching a stamp deployed by phase1/env."
 
   validation {
     condition     = length(var.stamps) >= 1

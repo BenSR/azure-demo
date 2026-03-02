@@ -1,13 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# dev.tfvars — dev workspace overrides for phase3
+# dev.tfvars — dev workspace overrides for phase2
 #
 # Usage:
-#   terraform -chdir=terraform/phase3/env workspace select dev
-#   terraform -chdir=terraform/phase3/env apply \
+#   terraform -chdir=terraform/phase2/env workspace select dev
+#   terraform -chdir=terraform/phase2/env apply \
 #     -var-file=terraform.tfvars -var-file=dev.tfvars
 #
 # stamp_name values must match the stamps deployed by phase1/env in the dev
-# workspace.  Phase 3 looks up function_app_hostnames, key_vault_ids, and
+# workspace.  Phase 2 looks up function_app_hostnames, key_vault_ids, and
 # app_insights_ids from the phase1/env remote state using these keys.
 # ─────────────────────────────────────────────────────────────────────────────
 

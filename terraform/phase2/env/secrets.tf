@@ -1,6 +1,6 @@
 # ─── TLS Secrets — Key Vault ──────────────────────────────────────────────────
 # Writes the certificates generated in phase1/core into each stamp's Key Vault.
-# Phase 3 runs on the VNet-injected runner so it can reach the KV Private
+# Phase 2 runs on the VNet-injected runner so it can reach the KV Private
 # Endpoints directly — this would be denied from a public GitHub-hosted runner.
 #
 # Three secrets are written per stamp:
@@ -60,9 +60,9 @@ resource "azurerm_key_vault_secret" "client_key" {
 # Why KV and not a plain output: the URL embeds publishing credentials
 # (site_credential username + password) and must be treated as a secret.
 #
-# Why stored here (Phase 3) not in the workload-stamp module: the stamp KV has
+# Why stored here (Phase 2) not in the workload-stamp module: the stamp KV has
 # public_network_access_enabled = false.  Phase 1 applies from a public hosted
-# runner that cannot reach the KV data plane.  Phase 3 runs on the VNet-injected
+# runner that cannot reach the KV data plane.  Phase 2 runs on the VNet-injected
 # runner in snet-runner, which can reach the KV Private Endpoint.
 #
 # CI/CD flow (see docs/3_cicd_approach.md):
