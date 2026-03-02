@@ -133,7 +133,7 @@ resource "azurerm_linux_function_app" "this" {
 
       # Token audience must match the identifier_uri of the Entra app registration.
       allowed_audiences = [
-        "api://func-${var.workload_name}-${var.stamp_number}-api-${var.environment}"
+        "api://${data.azurerm_client_config.current.tenant_id}/func-${var.workload_name}-${var.stamp_number}-api-${var.environment}"
       ]
     }
 

@@ -1,4 +1,12 @@
 
+# ─── Location ─────────────────────────────────────────────────────────────────
+
+variable "location" {
+  type        = string
+  default     = "northeurope"
+  description = "Azure region for resources that require an explicit location (scheduled query rule alerts)."
+}
+
 # ─── Remote state ────────────────────────────────────────────────────────────
 
 variable "state_storage_account_name" {
@@ -8,14 +16,14 @@ variable "state_storage_account_name" {
 
 # ─── Workload stamps ─────────────────────────────────────────────────────────
 # Must match the stamps deployed by phase1/env in the same workspace.
-# Phase 3 uses stamp_name to construct resource names and to look up outputs
+# Phase 2 uses stamp_name to construct resource names and to look up outputs
 # from the phase1/env remote state (key_vault_ids, function_app_hostnames, etc.).
 
 variable "stamps" {
   type = list(object({
     stamp_name = string
   }))
-  description = "List of stamp numbers to configure in Phase 3. stamp_name must be a numeric string (e.g. \"1\", \"2\") matching a stamp deployed by phase1/env."
+  description = "List of stamp numbers to configure in Phase 2. stamp_name must be a numeric string (e.g. \"1\", \"2\") matching a stamp deployed by phase1/env."
 
   validation {
     condition     = length(var.stamps) >= 1
@@ -33,34 +41,6 @@ variable "stamps" {
   }
 }
 
-# ─── APIM — API Operations ───────────────────────────────────────────────────
-# Defines the HTTP operations exposed on the workload API in APIM.
-# Override per environment in the workspace-specific .tfvars file as needed.
-
-variable "api_operations" {
-  type = list(object({
-    operation_id = string
-    display_name = string
-    http_method  = string
-    url_template = string
-  }))
-  description = "List of APIM API operations to expose on the workload API."
-
-  default = [
-    {
-      operation_id = "health-check"
-      display_name = "Health Check"
-      http_method  = "GET"
-      url_template = "/health"
-    },
-    {
-      operation_id = "post-echo"
-      display_name = "Echo"
-      http_method  = "POST"
-      url_template = "/echo"
-    },
-  ]
-}
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
@@ -99,5 +79,50 @@ variable "alert_availability_threshold_percent" {
   validation {
     condition     = var.alert_availability_threshold_percent > 0 && var.alert_availability_threshold_percent <= 100
     error_message = "Availability threshold must be between 0 and 100 (exclusive lower, inclusive upper)."
+  }
+}
+
+# ─── Web Test (availability probe) ────────────────────────────────────────────
+
+variable "web_test_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Enable the App Insights standard web test.  Disabled by default because
+    APIM is deployed in Internal VNet mode — external probes cannot reach the
+    gateway.  Enable when a public ingress path exists (e.g. Application Gateway).
+  EOT
+}
+
+variable "web_test_frequency_seconds" {
+  type        = number
+  default     = 300
+  description = "Interval in seconds between web test probes. Must be one of: 300, 600, 900."
+
+  validation {
+    condition     = contains([300, 600, 900], var.web_test_frequency_seconds)
+    error_message = "Web test frequency must be 300, 600, or 900 seconds."
+  }
+}
+
+variable "web_test_timeout_seconds" {
+  type        = number
+  default     = 30
+  description = "Timeout in seconds for each web test probe. Must be between 5 and 120."
+
+  validation {
+    condition     = var.web_test_timeout_seconds >= 5 && var.web_test_timeout_seconds <= 120
+    error_message = "Web test timeout must be between 5 and 120 seconds."
+  }
+}
+
+variable "web_test_geo_locations" {
+  type        = list(string)
+  default     = ["emea-gb-db3-azr", "emea-nl-ams-azr", "us-tx-sn1-azr", "us-il-ch1-azr", "apac-sg-sin-azr"]
+  description = "Azure geo-location IDs from which the standard web test probes are sent. Minimum 1."
+
+  validation {
+    condition     = length(var.web_test_geo_locations) >= 1
+    error_message = "At least one geo-location must be specified."
   }
 }

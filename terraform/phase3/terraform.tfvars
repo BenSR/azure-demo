@@ -1,29 +1,23 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # phase3 — shared non-secret configuration
 #
-# Values that are the SAME across all workspaces (dev, prod).
-# Workspace-specific stamp lists live in the per-workspace files:
+# Phase 3 is a single (non-workspace) deployment that creates the Application
+# Gateway.  It reads remote state from phase1/core and phase1/env workspaces
+# to discover APIM endpoints.
+#
+# Deployment:
+#   terraform -chdir=terraform/phase3 init -backend-config=backend.hcl
+#   terraform -chdir=terraform/phase3 apply
+#
+# Secrets (state_storage_account_name) are passed via environment variables
+# or -var flags — never stored in this file.
+# ─────────────────────────────────────────────────────────────────────────────
 
+location = "northeurope"
 
-# ─── Remote state ────────────────────────────────────────────────────────────
+environments = ["dev", "prod"]
 
-state_storage_account_name = "<your-state-storage-account>"
-
-# ─── APIM — API Operations ───────────────────────────────────────────────────
-# Default operations expose a health-check GET and a generic POST endpoint.
-# Override in a workspace-specific .tfvars if the API contract differs per env.
-
-api_operations = [
-  {
-    operation_id = "health-check"
-    display_name = "Health Check"
-    http_method  = "GET"
-    url_template = "/health"
-  },
-  {
-    operation_id = "post-message"
-    display_name = "Post Message"
-    http_method  = "POST"
-    url_template = "/message"
-  },
-]
+appgw_subnet_cidr  = "10.100.131.0/27"
+appgw_sku          = "Standard_v2"
+appgw_min_capacity = 1
+appgw_max_capacity = 2

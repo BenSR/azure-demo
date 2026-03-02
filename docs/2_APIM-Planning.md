@@ -35,7 +35,7 @@ Client ──mTLS──► APIM ──MI token──► Function App PE
 
 | Component | What | Where Configured |
 |-----------|------|-----------------|
-| **Entra ID App Registration** | Represents the Function App as a resource that can receive tokens. Created per-environment (e.g., `app-func-wkld-api-dev`). Has an Application ID URI (e.g., `api://func-wkld-1-api-dev`). No client secret — it is a token *audience*, not a token *requester*. | Terraform: `phase1/env/` or `phase3/` — `azuread_application` + `azuread_service_principal`. |
+| **Entra ID App Registration** | Represents the Function App as a resource that can receive tokens. Created per-stamp per-environment (e.g., `app-func-wkld-1-api-dev`). Has an Application ID URI (e.g., `api://<tenant-id>/func-wkld-1-api-dev`). No client secret — it is a token *audience*, not a token *requester*. | Terraform: `phase1/env/entra.tf` — `azuread_application` + `azuread_service_principal`. |
 | **Function App EasyAuth (v2)** | Built-in authentication on the Function App. Configured to require Entra ID tokens. Rejects unauthenticated requests with 401 before they reach function code. | Terraform: `azurerm_linux_function_app` → `auth_settings_v2` block. |
 | **APIM Managed Identity** | APIM's system-assigned MI requests a token scoped to the Function App's app registration. | Already exists in `phase1/env/apim.tf`. |
 | **APIM Inbound Policy** | `<authentication-managed-identity>` policy element in the APIM API/operation policy. Acquires and attaches the Bearer token on every backend call. | Terraform: `phase3/apim-config.tf` — `azurerm_api_management_api_policy`. |
@@ -45,9 +45,9 @@ Client ──mTLS──► APIM ──MI token──► Function App PE
 One `azuread_application` + `azuread_service_principal` per Function App, per environment. No client secret or certificate is created on this registration — it exists purely as a token audience.
 
 - **Display name** follows the pattern `app-func-{workload}-{stamp}-api-{env}` (e.g., `app-func-wkld-1-api-dev`).
-- **Identifier URI** follows `api://func-{workload}-{stamp}-api-{env}` — this is the **audience** that APIM requests a token for, and that EasyAuth validates in the incoming JWT.
+- **Identifier URI** follows `api://<tenant-id>/func-{workload}-{stamp}-api-{env}` (e.g., `api://xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/func-wkld-1-api-dev`). The tenant ID prefix scopes the URI to the correct directory. This is the **audience** that APIM requests a token for, and that EasyAuth validates in the incoming JWT.
 - No `required_resource_access` — this app registration receives tokens, it doesn't call other APIs.
-- Created in `phase1/env/` or `phase3/`, iterated per stamp.
+- Created in `phase1/env/entra.tf`, iterated per stamp via `for_each = local.stamps_map`.
 
 ### 1.4 Function App EasyAuth Configuration
 
@@ -60,7 +60,7 @@ Key behaviours:
 | `auth_enabled` | `true` | Enables the EasyAuth middleware. |
 | `require_authentication` | `true` | Every request must carry a valid token. No anonymous access. |
 | `unauthenticated_action` | `Return401` | Unauthenticated requests get a 401 immediately — no redirect to a login page. |
-| `allowed_audiences` | `api://func-{workload}-{stamp}-api-{env}` | The JWT's `aud` claim must match the Function App's identifier URI. Tokens scoped to other resources are rejected. |
+| `allowed_audiences` | `api://<tenant-id>/func-{workload}-{stamp}-api-{env}` | The JWT's `aud` claim must match the Function App's identifier URI (includes tenant ID prefix). Tokens scoped to other resources are rejected. |
 | `token_store_enabled` | `false` | No token caching needed — each request is independently validated. |
 
 EasyAuth runs as platform middleware — the function code never sees unauthenticated requests. The `active_directory_v2` block points at the app registration's client ID and the tenant's v2.0 auth endpoint.
@@ -69,10 +69,12 @@ EasyAuth runs as platform middleware — the function code never sees unauthenti
 
 APIM's inbound policy (defined in `phase3/apim-config.tf`) performs two steps on every request before forwarding to the Function App backend:
 
-1. **`validate-client-certificate`** — validates the client's mTLS certificate against the CA cert in Key Vault (trust, not-before, not-after; revocation check disabled).
-2. **`authentication-managed-identity`** — acquires a token from Entra ID using APIM's system-assigned MI, scoped to the Function App's app registration identifier URI (e.g., `api://func-wkld-1-api-dev`). The token is then attached as an `Authorization: Bearer` header via `set-header`.
+1. **`validate-client-certificate`** — validates the client's mTLS certificate thumbprint against a Named Value storing the expected thumbprint. `validate-trust="false"` and `validate-revocation="false"` (self-signed CA for this assessment; enable for production PKI). `validate-not-before` and `validate-not-after` are `true`. `ignore-error="false"` rejects the request on validation failure.
+2. **`authentication-managed-identity`** — acquires a token from Entra ID using APIM's system-assigned MI, scoped to the Function App's app registration identifier URI (e.g., `api://<tenant-id>/func-wkld-1-api-dev`). The token is then attached as an `Authorization: Bearer` header via `set-header`.
 
-The `resource` attribute must match the `identifier_uri` of the Function App's app registration. Entra ID issues the token because APIM's service principal is implicitly authorized to request tokens for any app registration in the same tenant (no explicit API permission grant is needed for first-party MI token requests).
+The `resource` attribute must match the `identifier_uri` of the Function App's app registration (including the tenant ID prefix). Entra ID issues the token because APIM's service principal is implicitly authorized to request tokens for any app registration in the same tenant (no explicit API permission grant is needed for first-party MI token requests).
+
+> **Manual step:** APIM must have "Negotiate client certificate" enabled at the service level. This cannot currently be set via the `azurerm` provider for the Developer SKU — it must be configured via the Azure portal or the Management REST API.
 
 ### 1.6 Health Endpoint — Authentication Exception
 
@@ -80,7 +82,7 @@ The `/api/health` endpoint is used by App Insights availability tests and APIM h
 
 **Decision:** Exclude `/api/health` from EasyAuth via `excluded_paths = ["/api/health"]` in the `auth_settings_v2` block. The endpoint returns no sensitive data, and network isolation (only APIM subnet can reach the PE) limits the blast radius.
 
-In the APIM policy, the health operation can skip the `authentication-managed-identity` element by using a separate operation-level policy without the MI auth block.
+In the APIM policy, the health operation has a separate operation-level policy (`azurerm_api_management_api_operation_policy`) that **intentionally omits `<base />`** in the inbound section, completely bypassing the API-level mTLS validation and Managed Identity authentication. Health probes always target the primary stamp (stamp-index 0) to avoid introducing randomness into synthetic monitoring.
 
 ---
 
@@ -94,7 +96,7 @@ In the APIM policy, the health operation can skip the `authentication-managed-id
      │  ✓ Valid cert ↓
      │
 3. APIM's MI requests token: POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
-     scope = api://func-wkld-1-api-dev/.default
+     scope = api://<tenant-id>/func-wkld-1-api-dev/.default
      client_assertion = MI federated credential
      │
 4. APIM attaches token: Authorization: Bearer <jwt>
@@ -103,7 +105,7 @@ In the APIM policy, the health operation can skip the `authentication-managed-id
      │
 6. Function App EasyAuth validates JWT:
      ├── Issuer matches Entra ID
-     ├── Audience matches api://func-wkld-1-api-dev
+     ├── Audience matches api://<tenant-id>/func-wkld-1-api-dev
      ├── Token is not expired
      └── Signature is valid (keys from Entra ID JWKS endpoint)
      │  ✗ Invalid token → 401 Unauthorized (EasyAuth, before function code)
@@ -127,10 +129,10 @@ Three layers of defence:
 |---------------|--------|---------|
 | `modules/workload-stamp/variables.tf` | Add `entra_app_client_id` and `tenant_id` variables | Passed from the app registration created in the calling root. |
 | `modules/workload-stamp/main.tf` | Add `auth_settings_v2` block to `azurerm_linux_function_app` | EasyAuth config as per Section 1.4. |
-| `phase1/env/` (or `phase3/`) | Add `azuread_application` + `azuread_service_principal` | One per Function App per environment. |
+| `phase1/env/entra.tf` | Add `azuread_application` + `azuread_service_principal` | One per Function App per environment. Created in phase1/env (not phase3) so the client ID is available when the Function App is first deployed. |
 | `phase1/env/workload.tf` | Pass `entra_app_client_id` to the stamp module | From the app registration output. |
-| `phase3/apim-config.tf` | Add `<authentication-managed-identity>` to APIM policy | As per Section 1.5. Resource URI per stamp. |
-| `phase1/env/main.tf` | Add `azuread` provider | Required for app registration resources. |
+| `phase3/env/apim-config.tf` | Add `<authentication-managed-identity>` to APIM policy | As per Section 1.5. Resource URI per stamp. Also defines API operations (`health-check` GET, `post-message` POST), backends per stamp, and Named Value for client cert thumbprint. |
+| `phase1/env/providers.tf` | Add `azuread` provider | Required for app registration resources in `entra.tf`. |
 
 ---
 

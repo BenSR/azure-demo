@@ -67,7 +67,7 @@ NSG rules for stamp subnets and cross-cutting rules (on APIM, shared-PE, runner,
 
 ### Function App / App Service Plan
 
-Python HTTP-triggered app, packaged as a Docker container, hosted on a Linux App Service Plan. Module takes a map of container definitions — can run multiple functions on one plan. Cheaper, and networking is simpler since the whole plan shares one VNet integration.
+Python HTTP-triggered app, packaged as a Docker container, hosted on a Linux App Service Plan. Module takes a map of container definitions — can run multiple functions on one plan. Cheaper, and networking is simpler since the whole plan shares one VNet integration. ASP SKU is **B1** (overridden from the module default of P1v3 for cost efficiency in this assessment).
 
 Input validation, error handling, response shape (message, timestamp, request ID) — all straightforward. The real challenge is making sure the Function App can talk to its dependencies (Storage, Key Vault, ACR) over private networking. Managed Identity + Private Endpoints should handle that.
 
@@ -112,7 +112,7 @@ VNet module takes an array of subnet objects. Stamp subnets are created by a sep
 
 ### Private DNS
 
-Every PaaS service behind a Private Endpoint needs a Private DNS Zone linked to the VNet — Key Vault (`privatelink.vaultcore.azure.net`), Storage (`privatelink.blob.core.windows.net`, etc.), ACR (`privatelink.azurecr.io`). Stand these up in Phase 1.
+Every PaaS service behind a Private Endpoint needs a Private DNS Zone linked to the VNet — Key Vault (`privatelink.vaultcore.azure.net`), Storage (`privatelink.blob.core.windows.net`, etc.), ACR (`privatelink.azurecr.io`), Function App (`privatelink.azurewebsites.net`). An additional `azure-api.net` zone is created for APIM internal VNet mode so the APIM gateway hostname resolves to its private IP within the VNet. Stand these up in Phase 1. Total: 8 Private DNS Zones.
 
 ### NSGs
 
@@ -145,15 +145,16 @@ Use Terraform `tls` provider to generate a self-signed CA + client cert signed b
 
 - **App Insights** on the Function App — tracing, dependency tracking, live metrics.
 - **Log Analytics Workspace** — central sink, everything goes here.
-- **Diagnostic settings** on every resource, streaming to Log Analytics. Technically a stretch goal but it's a few lines of TF per resource, just doing it.
-- **NSG flow logs** — disabled. Azure blocked new NSG flow log creation from June 2025; the `flow_logs_enabled` flag is set to `false`.
+- **Diagnostic settings** on Function Apps and Key Vaults, streaming to Log Analytics.
+- **NSG flow logs** — disabled. Azure blocked new NSG flow log creation from June 2025; the `flow_logs_enabled` flag is set to `false`. No diagnostic storage account (`stdiagcore`) is created.
 - **Alert rule** on 5xx error rate — practical, easy to demo.
 
 
 ## Identity & Permissions
 
-- **Service Principal** federated via OIDC — GitHub Actions auth to Azure for Terraform.
+- **Service Principal** — created by `prepare-azure-env.sh` bootstrap script with OIDC federated credentials for GitHub Actions. Owner on subscription + Application Developer + Directory Readers directory roles + MS Graph Application.ReadWrite.All.
 - **Managed Identities** on Function App — ACR pull, Key Vault access, Storage. No shared secrets.
+- **Entra ID app registrations** per stamp — used as token audiences for EasyAuth (APIM MI authenticates to Function App via Entra tokens).
 
 
 ## Two-stage (really three-stage) deployment
@@ -167,17 +168,18 @@ Split into two independent root modules within `phase1/`:
 **`phase1/core/`** — foundational infra (rarely changes):
 - Resource Groups (core only)
 - VNet + subnets + NSGs
-- Private DNS Zones
+- Private DNS Zones (8 zones: 7 privatelink + `azure-api.net`)
 - ACR (with Private Endpoint)
 - Log Analytics
-- NAT Gateway + Jump Box
-- CI/CD Identity (SP + OIDC federation)
+- NAT Gateway (attached to all subnets; NSGs control egress) + Jump Box + Self-Hosted Runner
 - TLS cert generation (CA + client cert)
+- CI/CD Identity detection (`data.azurerm_client_config`)
 
 **`phase1/env/`** — workload layer (changes more often, reads `core/` via remote state):
 - Resource Groups (shared + stamp)
-- APIM (internal mode, in its own subnet)
-- Module call: `modules/workload-stamp` per stamp — ASP, Function App(s), Storage Account, **Key Vault**, App Insights, all PEs
+- APIM (internal mode, in its own subnet) + Private DNS A record in `azure-api.net`
+- Entra ID app registrations (one per stamp per env)
+- Module call: `modules/workload-stamp` per stamp — ASP (B1), Function App(s), Storage Account, **Key Vault**, App Insights, all PEs, role assignments
 
 ### Phase 2 — Runner Registration (Automated via Custom Script Extension)
 
@@ -190,8 +192,8 @@ Phase 3 lives at `terraform/phase3/env/`, is workspace-driven (like `phase1/env/
 | File | Purpose |
 |------|---------|
 | `main.tf` | Provider config (`azurerm` + `azuread`), backend, remote state for both `core` and `env`. Environment derived from workspace. |
-| `secrets.tf` | Writes the CA certificate and client certificate (generated by `phase1/core/certificates.tf`) into each stamp's Key Vault. Requires data-plane access — only possible from inside the VNet. |
-| `apim-config.tf` | Creates APIM backends (one per stamp's Function App PE), API definition, operations, and the mTLS client-certificate validation policy using the CA cert from Key Vault. Includes load-balancing policy that uses `Random.Next()` to select a stamp and acquires per-stamp Entra MI tokens. |
+| `secrets.tf` | Writes the CA certificate, client certificate, client private key, and Kudu container deployment webhook URLs into each stamp’s Key Vault. Requires data-plane access — only possible from inside the VNet. |
+| `apim-config.tf` | Creates APIM named value (client cert thumbprint), backends (one per stamp's Function App PE), API definition, operations (GET /health, POST /message), and the mTLS client-certificate validation + Managed Identity token acquisition policy using round-robin stamp selection via `Random.Next()`. Health check operation has a separate policy that bypasses mTLS and MI auth. |
 | `alerts.tf` | Monitor metric alerts (5xx rate, availability test failures), App Insights standard web tests against the Function App health endpoint via APIM, and the shared Action Group (email/webhook). Alert thresholds are environment-specific (dev: 10 failures / 95% availability; prod: 3 failures / 99.9% availability). |
 | `variables.tf` | Shared variables: subscription, tenant, location, state account name, per-env tuning (alert thresholds, test probe frequency). |
 | `outputs.tf` | APIM gateway URL, alert rule IDs, web test IDs. |
@@ -225,9 +227,9 @@ terraform/
     env/             # Private data-plane ops — workspace-driven (dev/prod)
                      # Runs on self-hosted runner VM
       main.tf             # Provider config + remote state (reads core + env outputs)
-      secrets.tf          # CA + client cert writes to per-stamp Key Vaults
-      apim-config.tf      # APIM backends, API, operations, mTLS policy
-      alerts.tf           # Monitor alerts, web tests, action groups
+      secrets.tf          # CA cert, client cert, client key, webhook URL writes to per-stamp KVs
+      apim-config.tf      # APIM backends, API, operations, mTLS + MI auth policy
+      alerts.tf           # Monitor metric alerts, action groups
       variables.tf
       outputs.tf
       terraform.tfvars    # Shared values (subscription, location, state account)
@@ -235,7 +237,7 @@ terraform/
       prod.tfvars
 ```
 
-**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3-env.tfstate` (per workspace). `phase1/env/` and `phase3/env/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/env/` additionally reads `phase1/env/` outputs.
+**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3.tfstate` (per workspace). `phase1/env/` and `phase3/env/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/env/` additionally reads `phase1/env/` outputs.
 
 
 ## CI/CD Pipeline

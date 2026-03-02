@@ -6,7 +6,14 @@
       "Bash(chmod +x /workspaces/azure-demo/scripts/prepare-azure-env.sh)",
       "Bash(bash -n /workspaces/azure-demo/scripts/prepare-azure-env.sh)",
       "Bash(wc -l /workspaces/azure-demo/terraform/phase1/core/*.tf /workspaces/azure-demo/terraform/modules/*/*.tf /workspaces/azure-demo/terraform/phase1/env/*.tf)",
-      "Bash(grep -l \"phase3\" /workspaces/azure-demo/.github/workflows/*.yml)"
+      "Bash(grep -l \"phase3\" /workspaces/azure-demo/.github/workflows/*.yml)",
+      "Bash(pip install -q pydantic azure-functions pytest)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(terraform fmt -check -recursive terraform/phase3/)",
+      "Bash(pip install -q azure-monitor-opentelemetry)",
+      "Bash(terraform fmt -recursive terraform/)",
+      "Bash(terraform fmt -check -recursive terraform/)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

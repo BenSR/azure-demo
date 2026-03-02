@@ -1,24 +1,32 @@
-name: "Infra — Workload — Prod Apply"
+name: "Infra — Env — Prod Apply"
 
-# Runs on merge to main. phase1/env (workload infra) is planned, approved, and
-# applied first. phase3 (APIM config) is then planned on the self-hosted runner
-# — which has VNet access to read the Key Vault and APIM endpoints written by
-# phase1/env — and requires a second approval before applying.
+# Runs on merge to main (or manually). Deploys three sequential tiers, each
+# requiring approval before the apply step executes.
+#
+#   phase1/env  — workload infra (APIM, Function App, Key Vault, subnets)
+#   phase2/env  — workload config (APIM APIs/policies, secrets, alerts)  [self-hosted]
+#   phase3      — shared App Gateway (public mTLS ingress to all APIM instances) [self-hosted]
 #
 # Sequential flow:
-#   plan-infra → approve-infra → apply-infra → plan-apim → approve-apim → apply-apim
+#   plan-env → approve-env → apply-env
+#                                 ↓
+#                           plan-config → approve-config → apply-config
+#                                                               ↓
+#                                                         plan-appgw → approve-appgw → apply-appgw
 
 on:
   push:
     branches: [main]
     paths:
       - "terraform/phase1/env/**"
+      - "terraform/phase2/**"
       - "terraform/phase3/**"
       - "terraform/modules/**"
-      - ".github/workflows/infra-workload-prod.yml"
+      - ".github/workflows/infra-env-prod.yml"
+  workflow_dispatch:
 
 concurrency:
-  group: "infra-workload-prod"
+  group: "infra-env-prod"
   cancel-in-progress: false
 
 permissions:
@@ -30,11 +38,12 @@ env:
   ARM_USE_OIDC: "true"
   TF_VERSION: "~1.7"
   ENV_ROOT: "terraform/phase1/env"
-  PH3_ROOT: "terraform/phase3/env"
+  PHASE2_ROOT: "terraform/phase2/env"
+  PH3_ROOT: "terraform/phase3"
 
 jobs:
-  plan-infra:
-    name: "Prod infra — Plan"
+  plan-env:
+    name: "Prod env — Plan"
     runs-on: ubuntu-latest
     outputs:
       plan-key: ${{ steps.set-key.outputs.key }}
@@ -78,18 +87,18 @@ jobs:
             -var-file=prod.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -var="admin_user_upn=${{ secrets.ADMIN_ENTRA_UPN }}" \
-            -out=/tmp/tfplan-infra-prod \
+            -out=/tmp/tfplan-env-prod \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
-            echo "## Prod infra Plan (phase1/env)"
+            echo "## Prod env Plan (phase1/env)"
             echo ""
             echo "> [!IMPORTANT]"
-            echo "> Review this plan, then approve the **Prod infra — Approve** job to apply."
+            echo "> Review this plan, then approve the **Prod env — Approve** job to apply."
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Plan key | \`infra-prod-${{ github.run_id }}.tfplan\` |"
+            echo "| Plan key | \`env-prod-${{ github.run_id }}.tfplan\` |"
             echo "| Triggered by | \`${{ github.actor }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo ""
@@ -100,29 +109,29 @@ jobs:
 
       - name: "Set plan blob key"
         id: set-key
-        run: echo "key=infra-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
+        run: echo "key=env-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
 
       - name: "Upload plan to blob storage"
         run: |
           az storage blob upload \
             --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             --container-name "tfplans" \
-            --name "infra-prod-${{ github.run_id }}.tfplan" \
-            --file /tmp/tfplan-infra-prod \
+            --name "env-prod-${{ github.run_id }}.tfplan" \
+            --file /tmp/tfplan-env-prod \
             --auth-mode login \
             --overwrite
 
-  approve-infra:
-    name: "Prod infra — Approve"
-    needs: [plan-infra]
+  approve-env:
+    name: "Prod env — Approve"
+    needs: [plan-env]
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - run: echo "Prod infra plan approved by ${{ github.actor }}."
+      - run: echo "Prod env plan approved by ${{ github.actor }}."
 
-  apply-infra:
-    name: "Prod infra — Apply"
-    needs: [plan-infra, approve-infra]
+  apply-env:
+    name: "Prod env — Apply"
+    needs: [plan-env, approve-env]
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -160,8 +169,8 @@ jobs:
           az storage blob download \
             --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             --container-name "tfplans" \
-            --name "${{ needs.plan-infra.outputs.plan-key }}" \
-            --file /tmp/tfplan-infra-prod \
+            --name "${{ needs.plan-env.outputs.plan-key }}" \
+            --file /tmp/tfplan-env-prod \
             --auth-mode login
 
       - name: "Terraform apply"
@@ -169,14 +178,14 @@ jobs:
           set -o pipefail
           terraform -chdir=${{ env.ENV_ROOT }} apply \
             -no-color \
-            /tmp/tfplan-infra-prod 2>&1 | tee /tmp/apply-output.txt
+            /tmp/tfplan-env-prod 2>&1 | tee /tmp/apply-output.txt
 
           {
-            echo "## Prod infra Apply (phase1/env)"
+            echo "## Prod env Apply (phase1/env)"
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Plan key | \`${{ needs.plan-infra.outputs.plan-key }}\` |"
+            echo "| Plan key | \`${{ needs.plan-env.outputs.plan-key }}\` |"
             echo "| Applied by | \`${{ github.actor }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo ""
@@ -185,9 +194,162 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  plan-apim:
-    name: "Prod workload config — Plan"
-    needs: [apply-infra]
+  plan-config:
+    name: "Prod config — Plan"
+    needs: [apply-env]
+    runs-on: [self-hosted, linux]
+    outputs:
+      plan-key: ${{ steps.set-key.outputs.key }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.PHASE2_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase2.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: |
+          terraform -chdir=${{ env.PHASE2_ROOT }} workspace select prod \
+            || terraform -chdir=${{ env.PHASE2_ROOT }} workspace new prod
+
+      - name: "Terraform plan"
+        run: |
+          set -o pipefail
+          terraform -chdir=${{ env.PHASE2_ROOT }} plan \
+            -var-file=terraform.tfvars \
+            -var-file=prod.tfvars \
+            -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -var='alert_email_receivers=["${{ secrets.ADMIN_EMAIL }}"]' \
+            -out=/tmp/tfplan-config-prod \
+            -no-color 2>&1 | tee /tmp/plan-output.txt
+
+          {
+            echo "## Prod config Plan (phase2/env)"
+            echo ""
+            echo "> [!IMPORTANT]"
+            echo "> Review this plan, then approve the **Prod config — Approve** job to apply."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`config-prod-${{ github.run_id }}.tfplan\` |"
+            echo "| Triggered by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            cat /tmp/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Set plan blob key"
+        id: set-key
+        run: echo "key=config-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload plan to blob storage"
+        run: |
+          az storage blob upload \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "config-prod-${{ github.run_id }}.tfplan" \
+            --file /tmp/tfplan-config-prod \
+            --auth-mode login \
+            --overwrite
+
+  approve-config:
+    name: "Prod config — Approve"
+    needs: [plan-config]
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - run: echo "Prod config plan approved by ${{ github.actor }}."
+
+  apply-config:
+    name: "Prod config — Apply"
+    needs: [plan-config, approve-config]
+    runs-on: [self-hosted, linux]
+    environment: prod
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Azure login (OIDC)"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+      - name: "Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: "Terraform init"
+        run: |
+          terraform -chdir=${{ env.PHASE2_ROOT }} init \
+            -backend-config="resource_group_name=rg-core-deploy" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=phase2.tfstate"
+
+      - name: "Terraform workspace — prod"
+        run: terraform -chdir=${{ env.PHASE2_ROOT }} workspace select prod
+
+      - name: "Download plan from blob storage"
+        run: |
+          az storage blob download \
+            --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            --container-name "tfplans" \
+            --name "${{ needs.plan-config.outputs.plan-key }}" \
+            --file /tmp/tfplan-config-prod \
+            --auth-mode login
+
+      - name: "Terraform apply"
+        run: |
+          set -o pipefail
+          terraform -chdir=${{ env.PHASE2_ROOT }} apply \
+            -no-color \
+            /tmp/tfplan-config-prod 2>&1 | tee /tmp/apply-output.txt
+
+          {
+            echo "## Prod config Apply (phase2/env)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Plan key | \`${{ needs.plan-config.outputs.plan-key }}\` |"
+            echo "| Applied by | \`${{ github.actor }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo ""
+            echo '```'
+            tail -40 /tmp/apply-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  plan-appgw:
+    name: "Prod App Gateway — Plan"
+    needs: [apply-config]
     runs-on: [self-hosted, linux]
     outputs:
       plan-key: ${{ steps.set-key.outputs.key }}
@@ -218,31 +380,24 @@ jobs:
             -backend-config="container_name=tfstate" \
             -backend-config="key=phase3.tfstate"
 
-      - name: "Terraform workspace — prod"
-        run: |
-          terraform -chdir=${{ env.PH3_ROOT }} workspace select prod \
-            || terraform -chdir=${{ env.PH3_ROOT }} workspace new prod
-
       - name: "Terraform plan"
         run: |
           set -o pipefail
           terraform -chdir=${{ env.PH3_ROOT }} plan \
             -var-file=terraform.tfvars \
-            -var-file=prod.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
-            -var='alert_email_receivers=["${{ secrets.ADMIN_EMAIL }}"]' \
-            -out=/tmp/tfplan-apim-prod \
+            -out=/tmp/tfplan-appgw \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
-            echo "## Prod workload config Plan (phase3)"
+            echo "## Prod App Gateway Plan (phase3)"
             echo ""
             echo "> [!IMPORTANT]"
-            echo "> Review this plan, then approve the **Prod workload config — Approve** job to apply."
+            echo "> Review this plan, then approve the **Prod App Gateway — Approve** job to apply."
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Plan key | \`apim-prod-${{ github.run_id }}.tfplan\` |"
+            echo "| Plan key | \`appgw-prod-${{ github.run_id }}.tfplan\` |"
             echo "| Triggered by | \`${{ github.actor }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo ""
@@ -253,29 +408,29 @@ jobs:
 
       - name: "Set plan blob key"
         id: set-key
-        run: echo "key=apim-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
+        run: echo "key=appgw-prod-${{ github.run_id }}.tfplan" >> "$GITHUB_OUTPUT"
 
       - name: "Upload plan to blob storage"
         run: |
           az storage blob upload \
             --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             --container-name "tfplans" \
-            --name "apim-prod-${{ github.run_id }}.tfplan" \
-            --file /tmp/tfplan-apim-prod \
+            --name "appgw-prod-${{ github.run_id }}.tfplan" \
+            --file /tmp/tfplan-appgw \
             --auth-mode login \
             --overwrite
 
-  approve-apim:
-    name: "Prod workload config — Approve"
-    needs: [plan-apim]
+  approve-appgw:
+    name: "Prod App Gateway — Approve"
+    needs: [plan-appgw]
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - run: echo "Prod workload config plan approved by ${{ github.actor }}."
+      - run: echo "Prod App Gateway plan approved by ${{ github.actor }}."
 
-  apply-apim:
-    name: "Prod workload config — Apply"
-    needs: [plan-apim, approve-apim]
+  apply-appgw:
+    name: "Prod App Gateway — Apply"
+    needs: [plan-appgw, approve-appgw]
     runs-on: [self-hosted, linux]
     environment: prod
     env:
@@ -305,16 +460,13 @@ jobs:
             -backend-config="container_name=tfstate" \
             -backend-config="key=phase3.tfstate"
 
-      - name: "Terraform workspace — prod"
-        run: terraform -chdir=${{ env.PH3_ROOT }} workspace select prod
-
       - name: "Download plan from blob storage"
         run: |
           az storage blob download \
             --account-name "${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             --container-name "tfplans" \
-            --name "${{ needs.plan-apim.outputs.plan-key }}" \
-            --file /tmp/tfplan-apim-prod \
+            --name "${{ needs.plan-appgw.outputs.plan-key }}" \
+            --file /tmp/tfplan-appgw \
             --auth-mode login
 
       - name: "Terraform apply"
@@ -322,14 +474,14 @@ jobs:
           set -o pipefail
           terraform -chdir=${{ env.PH3_ROOT }} apply \
             -no-color \
-            /tmp/tfplan-apim-prod 2>&1 | tee /tmp/apply-output.txt
+            /tmp/tfplan-appgw 2>&1 | tee /tmp/apply-output.txt
 
           {
-            echo "## Prod workload config Apply (phase3)"
+            echo "## Prod App Gateway Apply (phase3)"
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Plan key | \`${{ needs.plan-apim.outputs.plan-key }}\` |"
+            echo "| Plan key | \`${{ needs.plan-appgw.outputs.plan-key }}\` |"
             echo "| Applied by | \`${{ github.actor }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo ""

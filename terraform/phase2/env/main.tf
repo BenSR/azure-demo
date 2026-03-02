@@ -13,7 +13,7 @@ locals {
     workspace   = terraform.workspace
     managed_by  = "terraform"
     project     = "azure-demo"
-    phase       = "3"
+    phase       = "2"
   }
 
   # Aliases for remote state outputs — keeps resource definitions readable.

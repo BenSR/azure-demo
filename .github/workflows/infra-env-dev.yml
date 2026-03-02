@@ -1,19 +1,20 @@
-name: "Infra — Workload — Dev Apply"
+name: "Infra — Env — Dev Apply"
 
-# Runs on merge to dev. Applies phase1/env (public runner), then phase3
+# Runs on merge to dev. Applies phase1/env (public runner), then phase2/env
 # (self-hosted runner, required for private Key Vault and APIM endpoints).
+# Phase3 (App Gateway) is shared infrastructure and is not deployed from dev.
 
 on:
   push:
     branches: [dev]
     paths:
       - "terraform/phase1/env/**"
-      - "terraform/phase3/**"
+      - "terraform/phase2/**"
       - "terraform/modules/**"
-      - ".github/workflows/infra-workload-dev.yml"
+      - ".github/workflows/infra-env-dev.yml"
 
 concurrency:
-  group: "infra-workload-dev"
+  group: "infra-env-dev"
   cancel-in-progress: false
 
 permissions:
@@ -25,11 +26,11 @@ env:
   ARM_USE_OIDC: "true"
   TF_VERSION: "~1.7"
   ENV_ROOT: "terraform/phase1/env"
-  PH3_ROOT: "terraform/phase3/env"
+  PHASE2_ROOT: "terraform/phase2/env"
 
 jobs:
-  apply-infra:
-    name: "Dev infra — Plan & Apply"
+  apply-env:
+    name: "Dev env — Plan & Apply"
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -103,10 +104,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  apply-apim:
-    name: "Dev workload config — Plan & Apply"
+  apply-config:
+    name: "Dev config — Plan & Apply"
     runs-on: [self-hosted, linux]
-    needs: apply-infra
+    needs: apply-env
     environment: dev
     env:
       ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
@@ -129,30 +130,30 @@ jobs:
 
       - name: "Terraform init"
         run: |
-          terraform -chdir=${{ env.PH3_ROOT }} init \
+          terraform -chdir=${{ env.PHASE2_ROOT }} init \
             -backend-config="resource_group_name=rg-core-deploy" \
             -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=phase3.tfstate"
+            -backend-config="key=phase2.tfstate"
 
       - name: "Terraform workspace — dev"
         run: |
-          terraform -chdir=${{ env.PH3_ROOT }} workspace select dev \
-            || terraform -chdir=${{ env.PH3_ROOT }} workspace new dev
+          terraform -chdir=${{ env.PHASE2_ROOT }} workspace select dev \
+            || terraform -chdir=${{ env.PHASE2_ROOT }} workspace new dev
 
       - name: "Terraform plan"
         run: |
           set -o pipefail
-          terraform -chdir=${{ env.PH3_ROOT }} plan \
+          terraform -chdir=${{ env.PHASE2_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var-file=dev.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -var='alert_email_receivers=["${{ secrets.ADMIN_EMAIL }}"]' \
-            -out=/tmp/tfplan-phase3-dev \
+            -out=/tmp/tfplan-config-dev \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
-            echo "## phase3 Plan — \`dev\`"
+            echo "## phase2/env Plan — \`dev\`"
             echo ""
             echo '```'
             cat /tmp/plan-output.txt
@@ -162,12 +163,12 @@ jobs:
       - name: "Terraform apply"
         run: |
           set -o pipefail
-          terraform -chdir=${{ env.PH3_ROOT }} apply \
+          terraform -chdir=${{ env.PHASE2_ROOT }} apply \
             -no-color \
-            /tmp/tfplan-phase3-dev 2>&1 | tee /tmp/apply-output.txt
+            /tmp/tfplan-config-dev 2>&1 | tee /tmp/apply-output.txt
 
           {
-            echo "## phase3 Apply — \`dev\`"
+            echo "## phase2/env Apply — \`dev\`"
             echo ""
             echo "| | |"
             echo "|---|---|"

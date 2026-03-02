@@ -39,7 +39,7 @@ The Function App is packaged as a Docker container, pushed to ACR (`acrcore`), a
 This is a tiny app — two HTTP endpoints, basic validation, structured error responses. A single `function_app.py` keeps things simple. No need for a multi-package layout.
 
 ```
-app/
+function_app/
 ├── Dockerfile
 ├── .dockerignore
 ├── host.json
@@ -54,23 +54,23 @@ app/
 
 | File | Purpose |
 |------|---------|
-| `function_app.py` | Everything — Pydantic models, validation, error helpers, the `echo` and `health` HTTP triggers. ~150 lines. |
+| `function_app.py` | Everything — Pydantic models, validation, error helpers, the `message` and `health` HTTP triggers. ~120 lines. |
 | `host.json` | Functions runtime configuration — logging, route prefix, timeout. |
 | `requirements.txt` | `azure-functions` + `pydantic`. |
-| `tests/test_function_app.py` | Unit tests using `pytest`. Mock `func.HttpRequest` objects to test validation, happy path, and error cases. |
+| `tests/test_function_app.py` | Unit tests using `pytest`. Mock `func.HttpRequest` objects to test validation, happy path, error cases, and the `trip_server_side_error` facility. 26 test functions. |
 
 ---
 
 ## 4. API Design
 
-### 4.1 POST `/api/echo`
+### 4.1 POST `/api/message`
 
 The primary endpoint. Satisfies FR-2.2 through FR-2.5.
 
 **Request:**
 
 ```json
-POST /api/echo
+POST /api/message
 Content-Type: application/json
 
 {
@@ -112,6 +112,18 @@ Content-Type: application/json
 }
 ```
 
+**Deliberate Error (500) — `trip_server_side_error: true`:**
+
+```json
+{
+  "error": {
+    "code": "DELIBERATE_ERROR",
+    "message": "Server-side error deliberately triggered via trip_server_side_error flag.",
+    "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+  }
+}
+```
+
 **Unexpected Error (500):**
 
 ```json
@@ -145,10 +157,10 @@ No authentication required on the health endpoint — it returns no sensitive da
 
 The single `function_app.py` file contains four logical sections:
 
-1. **Pydantic model** — `EchoRequest` with a `message: str` field and a validator that rejects empty/whitespace-only strings.
+1. **Pydantic model** — `EchoRequest` with a `message: str` field, a `trip_server_side_error: bool = False` field, and a validator that rejects empty/whitespace-only strings.
 2. **Request ID helper** — Extracts a request ID from `x-ms-request-id` (Azure), falls back to `x-request-id` (APIM correlation), or generates a UUID4.
 3. **Error response helper** — Builds structured JSON error bodies (code, message, request_id) for any error case.
-4. **Two HTTP triggers** — `echo` (POST) and `health` (GET), registered via `@app.route` decorators.
+4. **Two HTTP triggers** — `message` (POST `/api/message`) and `health` (GET `/api/health`), registered via `@app.route` decorators. Auth level is `ANONYMOUS` — authentication is handled by EasyAuth middleware, not function-level keys.
 
 ### Validation Edge Cases
 
@@ -158,6 +170,7 @@ The single `function_app.py` file contains four logical sections:
 | Valid JSON, missing `message` key | 400 `INVALID_REQUEST` |
 | `message` is null, empty, or whitespace-only | 400 `INVALID_REQUEST` |
 | `message` is wrong type (int, array, etc.) | 400 `INVALID_REQUEST` |
+| `trip_server_side_error` is `true` | 500 `DELIBERATE_ERROR` — intentional error for alert-rule testing |
 | Extra fields | Silently ignored (Pydantic default) |
 | Unhandled exception | 500 `INTERNAL_ERROR` |
 
@@ -219,7 +232,7 @@ Only two packages beyond the standard library:
 |---------|-------|----------|
 | Sampling | Enabled, but `Request` type excluded | Every request captured for audit (NFR-2.1). |
 | Log level | `Information` | Sufficient for this app. |
-| Route prefix | `api` | Endpoints at `/api/echo` and `/api/health`. |
+| Route prefix | `api` | Endpoints at `/api/message` and `/api/health`. |
 | Function timeout | 5 minutes | Generous for an echo function; prevents runaway executions. |
 
 ### `.dockerignore`
@@ -257,7 +270,7 @@ The Terraform `stamps` variable in `dev.tfvars` / `prod.tfvars` specifies the `i
 Since the `image_tag` is fixed per environment (`dev` or `latest`) and does not change between deploys, the Function App just needs to pull the updated image behind the same tag:
 
 1. **CI pushes the image** — The pipeline builds and pushes `wkld-api:dev` (on dev branch) or `wkld-api:latest` (on main).
-2. **Restart the Function App** — `az functionapp restart` triggers a fresh image pull. The tag in Terraform doesn't change, so no `terraform apply` is needed for routine deployments.
+2. **Trigger image pull via Kudu webhook** — The pipeline invokes the `deploy-webhook-url` stored in each stamp's Key Vault (provisioned by `phase3/env/secrets.tf`). This triggers a fresh image pull without needing Azure CLI access to the Function App. The tag in Terraform doesn't change, so no `terraform apply` is needed for routine deployments.
 
 Promotion from dev to prod is *merging the PR to main* — the main-branch pipeline builds and pushes `:latest`, then restarts the prod Function App.
 
@@ -265,7 +278,7 @@ Promotion from dev to prod is *merging the PR to main* — the main-branch pipel
 
 ## 9. Local Development
 
-- **Run locally** — `func start` from the `app/` directory serves both endpoints on `http://localhost:7071`. No Docker required for local dev.
+- **Run locally** — `func start` from the `function_app/` directory serves both endpoints on `http://localhost:7071`. No Docker required for local dev.
 - **Tests** — `pytest` with `pytest-cov` for coverage. Target ≥90% coverage on `function_app.py`.
 - **Container locally** — `docker build` + `docker run` on port 8080 with `AzureWebJobsStorage=UseDevelopmentStorage=true` for local validation of the container image.
 
@@ -310,12 +323,12 @@ Additional settings that may be needed (passed via `function_apps[].app_settings
 | Step | Task | Acceptance Criteria |
 |------|------|-------------------|
 | 1 | Create `app/` directory, `requirements.txt`, `host.json` | Files match Section 7. |
-| 2 | Implement `function_app.py` | Both endpoints work: POST `/api/echo` + GET `/api/health`. All validation edge cases handled. |
+| 2 | Implement `function_app.py` | Both endpoints work: POST `/api/message` + GET `/api/health`. All validation edge cases handled. Includes `trip_server_side_error` facility for alert testing. |
 | 3 | Write unit tests (`tests/test_function_app.py`) | All edge cases covered. ≥90% coverage. |
 | 4 | Create `Dockerfile` + `.dockerignore` | Multi-stage build. Image builds and runs correctly. |
 | 5 | Add CI job: lint + test | `pytest` with coverage gate. |
 | 6 | Add CI job: Docker build + push | Tags with `dev` (dev branch) or `latest` (main branch), pushes to ACR. Runs on VNet runner. |
-| 7 | Add deployment step | `az functionapp restart` on the target environment's Function App(s). |
+| 7 | Add deployment step | Kudu webhook deployment — pipeline triggers a restart via deploy-webhook-url stored in Key Vault (no SSH/CLI to Function App needed). |
 
 ---
 
@@ -324,7 +337,7 @@ Additional settings that may be needed (passed via `function_apps[].app_settings
 | Requirement | Implementation |
 |-------------|---------------|
 | FR-2.1 — Deploy Azure Function App | Terraform `workload-stamp` module + Docker container in ACR. |
-| FR-2.2 — Accept HTTP POST with `message` | POST `/api/echo` endpoint with Pydantic validation. |
+| FR-2.2 — Accept HTTP POST with `message` | POST `/api/message` endpoint with Pydantic validation. |
 | FR-2.3 — Validate payload, reject invalid | Pydantic `EchoRequest` model — 400 responses with structured error bodies. |
 | FR-2.4 — Return message + timestamp + request_id | Echo response in `function_app.py`. |
 | FR-2.5 — Graceful error handling | Try/except wrapper, structured error responses for all cases. |
