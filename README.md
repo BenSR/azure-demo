@@ -40,21 +40,78 @@ Environments (`dev`, `prod`) are managed via Terraform workspaces. Stamps are re
 
 ### Architecture Diagram
 
-<!-- TODO: Replace with architecture diagram -->
+```mermaid
+graph TD
+    Bootstrap["rg-core-deploy<br/><i>Bootstrap</i>"]
+    Core["rg-core<br/><i>Core</i>"]
+    EnvShared["rg-wkld-shared-{env}<br/><i>Env-shared (×1 per env)</i>"]
+    Stamp["rg-wkld-stamp-{N}-{env}<br/><i>Stamp (×N per env)</i>"]
 
-> *Placeholder — architecture diagram to be added.*
+    Bootstrap -- "Terraform state & OIDC" --> Core
+    Core -- "VNet, ACR, DNS, LAW" --> EnvShared
+    Core -- "App GW ingress" --> EnvShared
+    EnvShared -- "APIM routes to" --> Stamp
+```
+
+> **Bootstrap** holds Terraform state storage and the OIDC service principal. **Core** owns the shared VNet, Container Registry, Log Analytics, NAT Gateway, Private DNS zones, jump box, self-hosted runner, and Application Gateway. **Env-shared** contains one APIM instance per environment (dev/prod). Each **Stamp** is a repeatable workload unit: Function App, Storage Account, Key Vault, and Application Insights — all connected via Private Endpoints.
 
 ### Network Diagram
 
-<!-- TODO: Replace with network diagram -->
+```mermaid
+graph LR
+    subgraph VNet["vnet-core"]
+        subgraph Fixed["Fixed subnets"]
+            apim[snet-apim]
+            shared_pe[snet-shared-pe]
+            runner[snet-runner]
+            jumpbox[snet-jumpbox]
+        end
+        subgraph AppGW["Application Gateway"]
+            appgw[snet-appgw]
+            appgw_pl[snet-appgw-pl]
+        end
+        subgraph Stamps["Per-stamp subnet pairs"]
+            stamp_pe["snet-stamp-{env}-{N}-pe"]
+            stamp_asp["snet-stamp-{env}-{N}-asp"]
+        end
+    end
 
-> *Placeholder — network topology diagram to be added.*
+    NAT["NAT Gateway"] --> runner
+    appgw -- "Private Link" --> appgw_pl
+    appgw -- "443" --> apim
+    apim -- "443" --> stamp_pe
+    stamp_asp -- "443" --> stamp_pe
+    stamp_asp -- "443" --> shared_pe
+    runner -- "443" --> shared_pe
+    jumpbox -- "443" --> apim
+    jumpbox -- "443" --> shared_pe
+```
+
+> Single `/16` VNet with deterministic subnet allocation. Each stamp gets a PE + ASP subnet pair with dedicated NSGs. All PaaS services are accessible only via Private Endpoints in the PE subnets. The runner subnet egresses through the NAT Gateway; all other subnets have deny-all outbound to the internet.
 
 ### Request Flow
 
-<!-- TODO: Replace with request flow diagram -->
+```mermaid
+sequenceDiagram
+    participant Client
+    participant PE as Private Endpoint
+    participant AppGW as App Gateway
+    participant APIM
+    participant FuncPE as Function App PE
+    participant Func as Function App
 
-> *Placeholder — request flow diagram showing: Client → App GW (mTLS) → APIM (internal) → Function App PE.*
+    Client->>PE: HTTPS + client cert
+    PE->>AppGW: Private Link NAT
+    AppGW->>AppGW: Validate client cert (mTLS)
+    AppGW->>APIM: HTTPS (path-based routing)
+    APIM->>APIM: Acquire MI token, select stamp
+    APIM->>FuncPE: HTTPS + Bearer token
+    FuncPE->>Func: Private Endpoint
+    Func->>Func: Validate token (EasyAuth)
+    Func-->>Client: JSON response
+```
+
+> Clients connect to `appgw.internal.contoso.com` via a Private Endpoint in `snet-shared-pe`. The Application Gateway terminates mTLS (validating the client certificate against the project CA), then routes by URL path (`/api/dev/*` or `/api/prod/*`) to the correct APIM instance. APIM acquires a Managed Identity token, load-balances across stamps, and forwards to the Function App's Private Endpoint. The Function App validates the token via Entra ID EasyAuth.
 
 ---
 
@@ -207,6 +264,23 @@ GitHub Actions authenticates to Azure using OpenID Connect — no long-lived sec
 
 Teardown is not yet pipelined — it requires running `terraform destroy` in reverse phase order. Phase 2 and Phase 3 destroys must run from the self-hosted runner (private endpoint access required), so destroy core last.
 
+### Prerequisites
+
+Each `terraform destroy` requires a prior `terraform init` with backend configuration. For phases that use a partial backend (phase 3), pass the backend config explicitly:
+
+```hcl
+# backend.hcl (same for all phases)
+resource_group_name  = "rg-core-deploy"
+storage_account_name = "<your-state-storage-account>"
+container_name       = "tfstate"
+key                  = "phase3.tfstate"   # adjust per phase
+```
+
+```bash
+# Example: initialise phase 3 before destroy
+terraform -chdir=terraform/phase3 init -backend-config=backend.hcl
+```
+
 ### Step 1 — Destroy via the self-hosted runner
 
 SSH into the runner VM (or use the jump box to reach it) and run:
@@ -332,6 +406,34 @@ AI coding assistants (GitHub Copilot with Claude) were used extensively througho
 | Hallucinated resources | Occasionally referenced Azure resources or attributes that don't exist in the provider. | Caught by `terraform validate` and plan. |
 | Doc drift | AI-generated docs described intended design, not actual implementation. Phase numbering, resource names, and feature completeness diverged. | Full doc refresh against actual codebase. |
 | Naming inconsistency | Generated code didn't follow the stated naming convention consistently. | Manual pass to enforce `<abbr>-wkld-<N>-<env>` pattern. |
+
+### Selected Prompt Examples
+
+Below are representative prompts that illustrate the patterns above, with specific critique of what the AI produced.
+
+**1. Infrastructure generation — permissive defaults and missing cross-cutting concerns**
+
+> *"Please now create all the Phase 1 terraform to support the deployment of the app as described in the docs."*
+
+The AI generated syntactically valid Terraform with correct resource types, but NSG rules used `source_address_prefix = "*"` and `destination_address_prefix = "VirtualNetwork"` — far too broad for an internal-only architecture. Storage accounts were created with `public_network_access_enabled` defaulting to `true`. The generated modules also had no awareness of cross-subnet dependencies (e.g. APIM needing to reach Function App PEs in stamp subnets), because the AI treated each module as self-contained. **Fix:** Manual security hardening pass to add deny-all baselines, explicit per-source allow rules, and a new `workload-stamp-subnet` module specifically for cross-cutting NSG rules.
+
+**2. Resource group refactoring — AI couldn't infer shared-vs-per-env boundaries**
+
+> *"I think we need to refactor some of the docs and infra. I am not happy with some of the resources which would likely be shared between environments, like the ACR or Log Analytics, being named 'dev'."*
+
+The AI initially placed all resources (ACR, Log Analytics, VNet) into environment-scoped resource groups, resulting in duplicate shared infrastructure per workspace. It didn't distinguish between resources with a global lifecycle (VNet, ACR, LAW) and those that vary per environment (APIM, stamps). **Fix:** Introduced the 4-tier resource group model (bootstrap → core → env-shared → stamp) and restructured into phase1/core (shared) and phase1/env (per-workspace).
+
+**3. Documentation drift — described intent, not implementation**
+
+> *"Please create a document called `2_azure_infra_bom.md` which captures a complete bill of materials for the Azure infrastructure."*
+
+The generated BoM listed resources from the design docs that hadn't been built yet, used naming conventions that didn't match the actual code, and included resources (e.g. availability web test) that were only partially implemented. Phase numbers and resource counts were aspirational rather than factual. **Fix:** Full documentation refresh against the live codebase, verifying every resource name, count, and configuration against `terraform state list` output.
+
+**4. Hallucinated provider attributes**
+
+> *"Please now create all the terraform to support the deployment of the app as described in the doc suite."*
+
+The AI generated Terraform referencing attributes like `azurerm_function_app.auth_settings_v2` blocks with incorrect nested schema (e.g. `active_directory_v2.client_secret_setting_name` where the provider expects `client_secret_certificate_thumbprint`), and used `azurerm_api_management_api_policy` with an XML body containing unsupported APIM policy elements. **Fix:** Caught immediately by `terraform validate` and `terraform plan`; corrected by consulting the provider documentation.
 
 ---
 

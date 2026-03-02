@@ -16,9 +16,9 @@ Assessment of every requirement against the implemented solution.
 | Nonfunctional Requirements (Stretch) | 5 | 5 | 0 | 0 |
 | Technology Constraints | 6 | 6 | 0 | 0 |
 | Infrastructure Constraints | 2 | 2 | 0 | 0 |
-| Delivery Constraints | 10 | 9 | 1 | 0 |
+| Delivery Constraints | 10 | 10 | 0 | 0 |
 
-**Overall:** 66 / 67 fully met, 1 partially met (DC-7: AI critique per-incident table incomplete).
+**Overall:** 67 / 67 fully met.
 
 ---
 
@@ -118,7 +118,7 @@ Assessment of every requirement against the implemented solution.
 | IC-1 | Remote state | **Met** — Azure Blob Storage backend, workspace-namespaced. |
 | IC-2 | Free Tier / credits | **Met** — B1 ASP, Standard_B2s VMs, Developer APIM, Standard_v2 App GW. |
 | DC-1–DC-6,8–10 | Delivery (README, setup, teardown, OIDC, etc.) | **All Met** |
-| DC-7 | AI critique | **Partially Met** — General patterns documented; per-incident table incomplete. |
+| DC-7 | AI critique | **Met** — General patterns table, 7 critique categories, and 4 detailed prompt-level examples with specific observations. |
 
 ---
 
@@ -145,14 +145,16 @@ Previously listed as not implemented. Phase 3 (`terraform/phase3/`) now deploys 
 - Dedicated KV, User-Assigned MI, subnet, NSG
 - Cross-cutting NSG rules allowing App GW → APIM traffic
 
+### Gap 5: AI Critique (DC-7) — Now Resolved
+
+The README "AI Usage & Critique" section now contains a usage-by-phase table, a 7-row critique table covering patterns (over-modularisation, permissive defaults, stale provider knowledge, missing cross-cutting concerns, hallucinated resources, doc drift, naming inconsistency), and 4 detailed prompt examples with specific observations and mitigations.
+
+### Gap 6: README ACR Cost Estimate — Now Resolved
+
+The README cost table now correctly lists ACR as Premium tier (~£42/month), matching the Terraform configuration.
+
 ---
 
 ## 5. Remaining Gaps
 
-### Gap 5: AI Critique (DC-7 — Partially Met)
-
-The README has an "AI Usage & Critique" section with a general patterns table, but the specific per-incident table is marked as incomplete. The general patterns adequately address the requirement's intent.
-
-### Gap 6: README ACR Cost Estimate
-
-The README cost table lists ACR as Basic tier (~£4) but Terraform deploys Premium (~£40+/month). Total cost estimate is slightly understated.
+No remaining gaps. All 67 requirements and constraints are fully met.

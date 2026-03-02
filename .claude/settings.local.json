@@ -15,7 +15,9 @@
       "Bash(terraform fmt -check -recursive terraform/)",
       "Bash(echo \"exit: $?\")",
       "Bash(ls -la /workspaces/azure-demo/terraform/phase2/env/*.tfvars)",
-      "Bash(terraform fmt terraform/phase3/)"
+      "Bash(terraform fmt terraform/phase3/)",
+      "Bash(grep -r \"password\\\\|secret\\\\|token\\\\|key=\" /workspaces/azure-demo/scripts/*.sh)",
+      "Bash(grep -n \"azurerm_monitor_diagnostic_setting\\\\|azurerm_network_watcher_flow_log\" /workspaces/azure-demo/terraform/phase3/*.tf)"
     ]
   }
 }

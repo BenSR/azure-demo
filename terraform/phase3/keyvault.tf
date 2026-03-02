@@ -84,6 +84,18 @@ resource "azurerm_private_endpoint" "kv" {
   tags = local.tags
 }
 
+# ─── Diagnostic Settings ─────────────────────────────────────────────────────
+
+resource "azurerm_monitor_diagnostic_setting" "kv_appgw" {
+  name                       = "diag-kv-appgw-${local.name_suffix}"
+  target_resource_id         = azurerm_key_vault.appgw.id
+  log_analytics_workspace_id = local.core.log_analytics_workspace_id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+}
+
 # ─── Self-signed server certificate ──────────────────────────────────────────
 # Generated directly in Key Vault using the built-in "Self" issuer.  This
 # avoids the need to construct a PFX file externally — Key Vault issues the
