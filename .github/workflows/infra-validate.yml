@@ -84,3 +84,8 @@ jobs:
         run: |
           terraform -chdir=terraform/modules/workload-stamp init -backend=false
           terraform -chdir=terraform/modules/workload-stamp test
+
+      - name: "terraform validate — phase3"
+        run: |
+          terraform -chdir=terraform/phase3 init -backend=false
+          terraform -chdir=terraform/phase3 validate
