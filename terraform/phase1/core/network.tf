@@ -76,7 +76,8 @@ module "vnet" {
   attach_nat_gateway = true
   nat_gateway_id     = azurerm_nat_gateway.this.id
 
-  # Link all 7 Private DNS zones so every subnet resolves PE FQDNs.
+  # Link all 8 Private DNS zones so every subnet resolves PE FQDNs and
+  # internal APIM gateway hostnames.
   # Keys are static zone name literals (known at plan time); values are the
   # zone resource IDs (apply-time). This avoids the Terraform for_each
   # limitation where set/map keys must be known before apply.
@@ -88,6 +89,7 @@ module "vnet" {
     "privatelink.queue.core.windows.net" = module.private_dns.queue_storage_zone_id
     "privatelink.azurecr.io"             = module.private_dns.acr_zone_id
     "privatelink.azurewebsites.net"      = module.private_dns.websites_zone_id
+    "azure-api.net"                      = module.private_dns.apim_zone_id
   }
 
   # NSG flow logs disabled: Azure blocked new NSG flow log creation from June 2025.

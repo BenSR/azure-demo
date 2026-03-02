@@ -31,6 +31,17 @@ resource "azurerm_api_management" "this" {
   tags = local.tags
 }
 
+# ─── APIM — Private DNS A record ──────────────────────────────────────────────
+# Internal VNet mode APIM does not create a Private Endpoint.
+
+resource "azurerm_private_dns_a_record" "apim_gateway" {
+  name                = azurerm_api_management.this.name
+  zone_name           = "azure-api.net"
+  resource_group_name = local.core.resource_group_core
+  ttl                 = 300
+  records             = [tolist(azurerm_api_management.this.private_ip_addresses)[0]]
+}
+
 # ─── APIM — diagnostic settings ───────────────────────────────────────────────
 resource "azurerm_monitor_diagnostic_setting" "apim" {
   name                       = "diag-apim-${local.name_suffix}"
