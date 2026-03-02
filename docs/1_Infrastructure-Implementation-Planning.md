@@ -476,9 +476,6 @@ terraform/
       outputs.tf
       variables.tf
       providers.tf
-      diagnostics.tf    # Diagnostic settings for all stamp resources
-      outputs.tf
-      variables.tf
   phase1/
     core/               # Deployed ONCE — no workspace
       main.tf           # Provider config, backend, locals (name_suffix = "core")
@@ -486,33 +483,43 @@ terraform/
       dns.tf            # module "private_dns"
       network.tf        # module "vnet" + module "workload_stamp_subnet" (for_each) + NSG rules
       acr.tf            # acrcore + PE
-      observability.tf  # law-core + stdiagcore
+      observability.tf  # law-core
       certificates.tf   # tls CA + client cert generation
-      jumpbox.tf        # vm-jumpbox-core + NIC + PIP + AAD extension
+      jumpbox.tf        # vm-jumpbox-core + NIC + PIP + AAD extension + CSE (Setup-Jumpbox.ps1)
+      runner.tf         # vm-runner-core + NIC + AAD SSH extension + CSE (setup-runner.sh)
       identity.tf       # data.azurerm_client_config (CI/CD SP detection)
-      variables.tf      # stamp_subnets, jumpbox vars
+      data.tf           # data lookups
+      providers.tf
+      variables.tf      # stamp_subnets, jumpbox vars, runner vars
       outputs.tf
       terraform.tfvars  # ALL values: subscription, location, jumpbox, all stamp_subnets
     env/                # Workspace-driven: dev / prod
       main.tf           # Provider config, backend, remote state (reads core)
       resource-groups.tf  # rg-wkld-shared-<env> + per-stamp RGs
-      apim.tf           # apim-wkld-shared-<env>
-      workload.tf       # module "workload_stamp" (for_each over stamps)
+      apim.tf           # apim-wkld-shared-<env> + Private DNS A record + diagnostics
+      entra.tf          # azuread_application + azuread_service_principal per stamp
+      workload.tf       # module "workload_stamp" (for_each over stamps, asp_sku = "B1")
+      data.tf           # Remote state data source
+      providers.tf
       variables.tf      # stamps list, APIM publisher, state_storage_account_name
       outputs.tf
       terraform.tfvars  # Shared values (subscription, location, APIM publisher)
       dev.tfvars        # dev stamps (stamp_name, image_name, image_tag, location)
       prod.tfvars
   phase3/               # Workspace-driven: dev / prod
-    main.tf             # Provider config, backend, remote state (reads core + env)
-    secrets.tf          # CA + client cert writes to per-stamp Key Vaults
-    apim-config.tf      # APIM backends, API, operations, mTLS policy
-    alerts.tf           # Monitor alerts, availability tests, action groups
-    variables.tf
-    outputs.tf
-    terraform.tfvars    # Shared values
-    dev.tfvars
-    prod.tfvars
+    env/                # Phase 3 resources live under env/ subdirectory
+      main.tf           # Provider config, backend, remote state (reads core + env)
+      secrets.tf        # CA cert, client cert, client key, webhook URL writes to per-stamp KVs
+      apim-config.tf    # APIM backends, API, operations, mTLS + MI auth policy
+      alerts.tf         # Monitor metric alerts, action groups
+      data.tf           # Remote state data sources
+      providers.tf
+      variables.tf
+      outputs.tf
+      terraform.tfvars  # Shared values
+      dev.tfvars
+      prod.tfvars
+    terraform.tfvars    # Top-level shared vars (state_storage_account_name)
 ```
 
 ---
