@@ -88,3 +88,11 @@ output "query_5xx_alert_ids" {
   }
   description = "Map of stamp number → scheduled query rule alert resource ID (HTTP 5xx direct query)."
 }
+
+output "web_test_ids" {
+  value = {
+    for stamp_key, wt in azurerm_application_insights_standard_web_test.health :
+    stamp_key => wt.id
+  }
+  description = "Map of stamp number → App Insights standard web test resource ID (health endpoint probe)."
+}

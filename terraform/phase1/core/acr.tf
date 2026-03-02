@@ -46,3 +46,24 @@ resource "azurerm_private_endpoint" "acr" {
   tags = local.tags
 }
 
+# ─── ACR — Diagnostic Settings ─────────────────────────────────────────────────
+# Streams container registry login and repository events to the shared LAW.
+
+resource "azurerm_monitor_diagnostic_setting" "acr" {
+  name                       = "diag-acr-${local.name_suffix}"
+  target_resource_id         = azurerm_container_registry.this.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
+
+  enabled_log {
+    category = "ContainerRegistryLoginEvents"
+  }
+
+  enabled_log {
+    category = "ContainerRegistryRepositoryEvents"
+  }
+
+  metric {
+    category = "AllMetrics"
+  }
+}
+
