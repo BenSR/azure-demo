@@ -1,3 +1,6 @@
+# ─── Entra ID ────────────────────────────────────────────────────────────────
+data "azuread_client_config" "current" {}
+
 # ─── Remote state — phase1/core ───────────────────────────────────────────────
 # Core is deployed once (not workspace-scoped); state key is always the same.
 
