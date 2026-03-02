@@ -89,7 +89,7 @@ module "vnet" {
     "privatelink.queue.core.windows.net" = module.private_dns.queue_storage_zone_id
     "privatelink.azurecr.io"             = module.private_dns.acr_zone_id
     "privatelink.azurewebsites.net"      = module.private_dns.websites_zone_id
-    "azure-api.net"                      = module.private_dns.apim_zone_id
+    "internal.contoso.com"               = module.private_dns.apim_zone_id
   }
 
   # NSG flow logs disabled: Azure blocked new NSG flow log creation from June 2025.
@@ -198,13 +198,15 @@ resource "azurerm_network_security_rule" "apim_in_allow_mgmt" {
 
 resource "azurerm_network_security_rule" "apim_in_allow_lb_health" {
   # Azure Load Balancer health probes for the APIM gateway.
+  # stv2 (used by all tiers including Developer) uses port 6390.
+  # The old stv1 range (65200-65535) is no longer required.
   name                        = "allow-inbound-lb-health"
   priority                    = 120
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
-  destination_port_range      = "65200-65535"
+  destination_port_range      = "6390"
   source_address_prefix       = "AzureLoadBalancer"
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.core.name

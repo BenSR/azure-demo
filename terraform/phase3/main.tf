@@ -93,7 +93,7 @@ locals {
   }
 
   # Extract APIM gateway hostnames (strip https:// prefix).
-  # e.g. "apim-wkld-shared-dev.azure-api.net"
+  # e.g. "apim-wkld-shared-dev.internal.contoso.com"
   env_apim_hostnames = {
     for env_key, env_data in local.env :
     env_key => trimprefix(env_data.apim_gateway_url, "https://")
