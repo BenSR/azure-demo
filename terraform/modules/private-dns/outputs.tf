@@ -35,7 +35,7 @@ output "websites_zone_id" {
 
 output "apim_zone_id" {
   value       = azurerm_private_dns_zone.apim.id
-  description = "Zone ID for API Management (azure-api.net) internal VNet DNS resolution."
+  description = "Zone ID for API Management custom domain (internal.contoso.com) DNS resolution."
 }
 
 output "all_zone_ids" {

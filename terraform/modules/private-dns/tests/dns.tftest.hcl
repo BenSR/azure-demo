@@ -40,8 +40,8 @@ run "key_vault_and_compute_zones" {
   }
 
   assert {
-    condition     = azurerm_private_dns_zone.apim.name == "azure-api.net"
-    error_message = "APIM DNS zone name must be azure-api.net"
+    condition     = azurerm_private_dns_zone.apim.name == "internal.contoso.com"
+    error_message = "APIM DNS zone name must be internal.contoso.com"
   }
 }
 
