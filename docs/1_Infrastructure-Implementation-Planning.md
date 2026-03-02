@@ -29,11 +29,11 @@ Three naming tiers:
 
 | Tier | Pattern | Env suffix? | Description |
 |------|---------|-------------|-------------|
-| **Core** | `<abbr>-wkld-core-<env>` | Yes | Per-workspace core platform resources (VNet, ACR, Log Analytics, DNS, NAT GW, Jump box). Each workspace owns its own copy, named with the env suffix. |
+| **Core** | `<abbr>-core` or `<abbr>core` | No | Core platform resources (VNet, ACR, Log Analytics, DNS, NAT GW, Jump box, Runner). Shared across all environments. No workload prefix, no env suffix. |
 | **Shared env** | `<abbr>-wkld-shared-<env>` | Yes | Per-environment shared infra (APIM, Key Vault). Policy and secrets differ by env. |
 | **Stamp** | `<abbr>-wkld-<N>-<app_slug>-<env>` | Yes | Per-stamp, per-environment compute (ASP, Function App, Storage, App Insights). The app slug distinguishes multiple Function Apps within a single stamp. |
 
-- **Storage accounts** (and any other resources that prohibit hyphens) drop hyphens: `<abbr>wkld<N><env>` (e.g. `stwkld1dev`, `acrwklddev`)
+- **Storage accounts** (and any other resources that prohibit hyphens) drop hyphens: `<abbr>wkld<N><env>` (e.g. `stwkld1dev`). ACR uses a subscription-ID hex prefix for global uniqueness: `acr<scope><8-hex-chars>` (e.g. `acrcore09d0073b`).
 
 ### Design Decision — Global Uniqueness
 
@@ -47,9 +47,9 @@ Storage accounts and a handful of other Azure resources require globally unique 
 |----------|-------------|------|
 | Resource Group | `rg` | `rg-core` |
 | Virtual Network | `vnet` | `vnet-core` |
-| Container Registry | `acr` | `acrcore` |
+| Container Registry | `acr` | `acrcore<sub-hex>` (e.g. `acrcore09d0073b`) |
 | Log Analytics Workspace | `law` | `law-core` |
-| Diagnostic Storage Account | `st` | `stdiagcore` |
+| Diagnostic Storage Account | `st` | *(removed — NSG flow logs disabled, no storage account created)* |
 | NAT Gateway | `nat` | `nat-core` |
 | NAT GW Public IP | `pip` | `pip-nat-core` |
 | NSG (fixed subnet) | `nsg` | `nsg-core-<subnet>` e.g. `nsg-core-apim` |
@@ -220,7 +220,7 @@ State is automatically namespaced per workspace by the azurerm backend (`env:/de
 #### Defaults & Security Posture
 
 - One NSG created per subnet; default rule denies all inbound.
-- NSG flow logs enabled where a Log Analytics Workspace ID is supplied.
+- NSG flow logs disabled (`flow_logs_enabled = false`). Azure blocked new NSG flow log creation from June 2025. The module retains flow log resource definitions gated behind the flag.
 
 ---
 
@@ -240,8 +240,7 @@ State is automatically namespaced per workspace by the azurerm backend (`env:/de
 | `table_storage_zone_id` | `privatelink.table.core.windows.net` | Storage Account (table) |
 | `queue_storage_zone_id` | `privatelink.queue.core.windows.net` | Storage Account (queue) |
 | `acr_zone_id` | `privatelink.azurecr.io` | Azure Container Registry |
-| `websites_zone_id` | `privatelink.azurewebsites.net` | Function App (private endpoint) |
-
+| `websites_zone_id` | `privatelink.azurewebsites.net` | Function App (private endpoint) || `apim_zone_id` | `azure-api.net` | APIM internal VNet mode (gateway hostname resolution) |
 #### Inputs
 
 | Variable | Type | Description |
@@ -262,9 +261,10 @@ Each zone ID is exposed as an individual, clearly named output (see table above)
 | `queue_storage_zone_id` | Zone ID for Queue Storage private endpoints. |
 | `acr_zone_id` | Zone ID for ACR private endpoints. |
 | `websites_zone_id` | Zone ID for Function App / Web App private endpoints. |
+| `apim_zone_id` | Zone ID for APIM internal VNet mode hostname resolution. |
 | `all_zone_ids` | `list(string)` — convenience output for bulk VNet linking. |
 
-> **Note:** VNet linking is handled by the `modules/vnet` module, which accepts `private_dns_zone_ids` and creates the link resources. This keeps DNS zone *creation* and DNS zone *linking* cleanly separated.
+> **Note:** VNet linking is handled by the `modules/vnet` module, which accepts `private_dns_zones` (a map of zone name → zone ID) and creates the link resources. This keeps DNS zone *creation* and DNS zone *linking* cleanly separated.
 
 ---
 
@@ -316,14 +316,17 @@ Each zone ID is exposed as an individual, clearly named output (see table above)
 | `environment` | `string` | Environment name (e.g., `dev`, `prod`). |
 | `resource_group_name` | `string` | Target resource group. |
 | `location` | `string` | Azure region. |
-| `asp_sku` | `string` | App Service Plan SKU. Default: `P1v3` (minimum for VNet integration + containers). |
+| `asp_sku` | `string` | App Service Plan SKU. Default: `P1v3` (overridden to `B1` in `phase1/env/workload.tf` for cost efficiency). |
 | `function_apps` | `map(object)` | Map of Function App definitions. Each: `image` (ACR image ref), `app_settings` (map). |
 | `subnet_id` | `string` | Subnet ID for App Service Plan VNet integration (must be delegated to `Microsoft.Web/serverFarms`). |
 | `private_endpoint_subnet_id` | `string` | Subnet ID for Private Endpoints. |
 | `acr_id` | `string` | ACR resource ID (for role assignment — AcrPull). |
-| `key_vault_id` | `string` | Key Vault resource ID (for role assignment — Secrets User). |
+| `key_vault_id` | `string` | *(Removed — Key Vault is created inside the module, not passed in.)* |
 | `log_analytics_workspace_id` | `string` | Log Analytics Workspace ID for diagnostic settings. |
-| `private_dns_zone_ids` | `object` | Object containing relevant zone IDs (blob, file, table, queue, websites) from `modules/private-dns`. |
+| `private_dns_zone_ids` | `object` | Object containing relevant zone IDs (blob, file, table, queue, websites, key_vault) from `modules/private-dns`. |
+| `entra_app_client_id` | `string` | Application (client) ID of the Entra ID app registration for this stamp's Function App. Used to configure EasyAuth (auth_settings_v2). |
+| `apim_principal_id` | `string` | Object ID of the APIM system-assigned managed identity. Granted Key Vault Certificate User and Secrets User so APIM can retrieve mTLS certs in Phase 3. |
+| `admin_user_principal_name` | `string` | UPN of the Entra ID user to grant Key Vault Secrets Officer on this stamp’s Key Vault. |
 | `tags` | `map(string)` | Resource tags. |
 
 #### Outputs
@@ -346,8 +349,8 @@ Each zone ID is exposed as an individual, clearly named output (see table above)
 - **Minimum TLS**: `minimum_tls_version = "1.2"` on Function Apps and Storage.
 - **VNet integration**: Automatically configured using the supplied `subnet_id`.
 - **Private Endpoints**: Created for the Storage Account (blob, file, table, queue) and Function App, wired to the supplied DNS zone IDs.
-- **Diagnostic settings**: Created for ASP, Function App(s), Storage Account — all streaming to the supplied Log Analytics Workspace.
-- **Role assignments**: AcrPull on the ACR, Key Vault Secrets User on Key Vault — granted to each Function App's Managed Identity.
+- **Diagnostic settings**: Created for Function App(s) (FunctionAppLogs) and Key Vault (AuditEvent) \u2014 streaming to the supplied Log Analytics Workspace.
+- **Role assignments**: AcrPull on the ACR, Key Vault Secrets User on Key Vault (for Function App MI), Key Vault Certificate User + Secrets User on Key Vault (for APIM MI), Key Vault Administrator (for CI/CD SP), Key Vault Secrets Officer (for admin user), Storage Blob Data Owner / Queue Data Contributor / Table Data Contributor (for Function App MI) — granted to each Function App's Managed Identity or the relevant principal.
 
 ---
 
@@ -360,16 +363,17 @@ These resources exist once per deployment and do not benefit from modularisation
 | Resource | File | Resource Group | Notes |
 |----------|------|---------------|-------|
 | Core Resource Group | `resource-groups.tf` | — | `rg-core`. Pre-created deploy RG: `rg-core-deploy` (manual, holds state). |
-| Module call: `modules/private-dns` | `dns.tf` | `rg-core` | Creates all 7 Private DNS Zones. Linked to VNet by `modules/vnet`. |
-| Module call: `modules/vnet` | `network.tf` | `rg-core` | Creates `vnet-core` (`10.100.0.0/16`), 4 fixed shared subnets, their NSGs and flow logs, DNS zone links, NAT GW association. |
+| Module call: `modules/private-dns` | `dns.tf` | `rg-core` | Creates all 8 Private DNS Zones (7 privatelink zones + `azure-api.net` for APIM). Linked to VNet by `modules/vnet`. |
+| Module call: `modules/vnet` | `network.tf` | `rg-core` | Creates `vnet-core` (`10.100.0.0/16`), 4 fixed shared subnets, their NSGs, DNS zone links (all 8 zones), NAT GW association (to all subnets). |
 | Module call: `modules/workload-stamp-subnet` (for_each) | `network.tf` | `rg-core` | One instance per `var.stamp_subnets` entry. Creates `snet-stamp-<env>-<N>-pe/asp`, NSGs, all per-stamp and cross-cutting NSG rules. |
 | NSG rules — shared subnets | `network.tf` | `rg-core` | APIM, shared-PE, runner, jumpbox static NSG rules. Stamp-referencing cross-cutting rules are delegated to the module above. |
-| NAT Gateway + Public IP | `network.tf` | `rg-core` | `nat-core` + `pip-nat-core`. Associated to `snet-runner`. |
-| Azure Container Registry | `acr.tf` | `rg-core` | `acrcore` — single shared ACR, Premium SKU, no public access. |
-| Log Analytics Workspace | `observability.tf` | `rg-core` | `law-core`. Also creates `stdiagcore` storage for NSG flow logs. |
+| NAT Gateway + Public IP | `network.tf` | `rg-core` | `nat-core` + `pip-nat-core`. Associated to all subnets via `modules/vnet` (`attach_nat_gateway = true`). NSG rules control which subnets can actually reach the internet. |
+| Azure Container Registry | `acr.tf` | `rg-core` | `acrcore<sub-hex>` — single shared ACR, Premium SKU, no public access. |
+| Log Analytics Workspace | `observability.tf` | `rg-core` | `law-core`. |
 | Self-signed CA + client cert | `certificates.tf` | — | `tls` provider generates cert objects in Terraform state. KV write deferred to Phase 3. |
 | CI/CD Identity | `identity.tf` | — | `data.azurerm_client_config` to detect the CI/CD SP for downstream role assignments. |
-| Jump Box VM | `jumpbox.tf` | `rg-core` | `vm-jumpbox-core` — Windows 11 + Entra ID auth + `pip-jumpbox-core` for RDP. |
+| Jump Box VM | `jumpbox.tf` | `rg-core` | `vm-jumpbox-core` — Windows 11 + Entra ID auth + `pip-jumpbox-core` for RDP. Custom Script Extension downloads and runs `Setup-Jumpbox.ps1` (installs Azure CLI, Git). |
+| Self-Hosted Runner VM | `runner.tf` | `rg-core` | `vm-runner-core` — Ubuntu 22.04 + Entra ID SSH + Custom Script Extension (`setup-runner.sh`). Break-glass SSH key generated via `tls_private_key`. |
 
 ### `phase1/env/` — Workspace-driven (dev / prod)
 
@@ -378,15 +382,16 @@ These resources exist once per deployment and do not benefit from modularisation
 | Resource | File | Resource Group | Notes |
 |----------|------|---------------|-------|
 | Resource Groups | `resource-groups.tf` | — | `rg-wkld-shared-dev` + one `rg-wkld-stamp-<N>-dev` per stamp (via `for_each`). |
-| API Management | `apim.tf` | `rg-wkld-shared-dev` | `apim-wkld-shared-dev` — Developer tier, internal VNet mode, system-assigned MI. |
-| Module call: `modules/workload-stamp` (for_each) | `workload.tf` | `rg-wkld-stamp-<N>-dev` | One per stamp in `var.stamps`. Subnet IDs resolved from core remote state by name convention. Function App: `func-wkld-<N>-api-dev`. |
+| API Management | `apim.tf` | `rg-wkld-shared-dev` | `apim-wkld-shared-dev` — Developer tier, internal VNet mode, system-assigned MI. Private DNS A record in `azure-api.net` zone. Diagnostic settings: GatewayLogs + WebSocketConnectionLogs. |
+| Entra ID App Registrations | `entra.tf` | — | One `azuread_application` + `azuread_service_principal` per stamp per environment. Display name: `app-func-wkld-<N>-api-<env>`. Identifier URI: `api://<tenant_id>/func-wkld-<N>-api-<env>`. |
+| Module call: `modules/workload-stamp` (for_each) | `workload.tf` | `rg-wkld-stamp-<N>-dev` | One per stamp in `var.stamps`. ASP SKU overridden to `B1`. Subnet IDs resolved from core remote state by name convention. Function App: `func-wkld-<N>-api-dev`. |
 
 ### Phase 3 — Private Data-Plane Operations (self-hosted VNet runner)
 
 | Resource / Action | File | Notes |
 |-------------------|------|-------|
 | Container image build + push to ACR | CI/CD step | Not Terraform — Docker build + `az acr login` + push. |
-| Key Vault secrets / certificates | `secrets.tf` | Write CA and client certificates (generated by `certificates.tf` in Phase 1) and any app secrets into Key Vault. Data-plane op — requires the VNet-injected runner. |
+| Key Vault secrets / certificates | `secrets.tf` | Writes CA cert, client cert, client private key, and deploy webhook URLs into each stamp\u2019s Key Vault. Data-plane op \u2014 requires the VNet-injected runner. |
 | APIM backend + API + mTLS policy | `apim-config.tf` | Wire APIM to Function App backend(s). Configure client cert validation policy using the CA cert from Key Vault. |
 | Monitor alert rules | `alerts.tf` | Alert on 5xx rate, availability test failures. Action group with email/webhook. |
 | Availability test | `alerts.tf` | App Insights standard web test against Function App health endpoint (via APIM or direct). |
@@ -446,23 +451,31 @@ phase1/env/ (workspace-driven: dev / prod)
 terraform/
   modules/
     private-dns/
-      main.tf           # 7 Private DNS zone resources
+      main.tf           # 8 Private DNS zone resources (7 privatelink + azure-api.net)
       outputs.tf        # Named zone ID outputs + all_zone_ids list
       variables.tf
+      providers.tf
     vnet/
-      main.tf           # VNet, fixed subnets, NSGs, DNS zone links, NAT GW assoc, flow logs
+      main.tf           # VNet, fixed subnets, NSGs, DNS zone links, NAT GW assoc (all subnets)
       outputs.tf        # vnet_id, subnet_ids, nsg_ids, nsg_names
       variables.tf
+      providers.tf
     workload-stamp-subnet/
-      main.tf           # PE + ASP subnets, 2 NSGs, flow logs
+      main.tf           # PE + ASP subnets, 2 NSGs
       nsg-rules.tf      # All per-stamp NSG rules + cross-cutting rules on shared NSGs
       outputs.tf        # subnet IDs, NSG IDs/names
       variables.tf
+      providers.tf
     workload-stamp/
       main.tf           # ASP, Function App(s), Storage, App Insights
       keyvault.tf       # Key Vault (per-stamp) + KV Private Endpoint
-      identity.tf       # Role assignments (AcrPull, KV roles, Storage roles)
+      identity.tf       # Role assignments (AcrPull, KV roles for func/APIM/admin/CI-CD, Storage roles)
       private-endpoints.tf  # Storage × 4 + Function App PEs
+      diagnostics.tf    # Diagnostic settings (Function App + Key Vault)
+      data.tf           # data.azurerm_client_config for CI/CD SP, data.azuread_user for admin UPN
+      outputs.tf
+      variables.tf
+      providers.tf
       diagnostics.tf    # Diagnostic settings for all stamp resources
       outputs.tf
       variables.tf

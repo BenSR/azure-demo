@@ -56,7 +56,7 @@ Complete inventory of every Azure resource expected to be created, including SKU
 
 ### 2.3 Network Security Groups
 
-One NSG per subnet, each with a default `DenyAll` at priority 4096 and only the minimum required allow rules. Detailed rule sets are documented in the network technical design.
+One NSG per subnet, each with a default deny rule at priority 4000 and only the minimum required allow rules. Detailed rule sets are documented in the network technical design.
 
 **Fixed subnet NSGs** (created by `modules/vnet`, names derived as `nsg-core-<subnet-minus-snet-prefix>`):
 
@@ -78,7 +78,7 @@ One NSG per subnet, each with a default `DenyAll` at priority 4096 and only the 
 
 | # | Resource Name | Type | SKU | Purpose | Associated Subnet | Phase |
 |---|--------------|------|-----|---------|-------------------|-------|
-| 15 | `nat-core` | `azurerm_nat_gateway` | Standard | Deterministic egress for the GitHub Runner — the only resource requiring internet access. | `snet-runner` | Phase 1 (core) |
+| 15 | `nat-core` | `azurerm_nat_gateway` | Standard | Deterministic egress. Attached to all subnets in the VNet; however, only `snet-runner` and `snet-jumpbox` have NSG rules permitting internet-bound traffic. | All subnets (via `modules/vnet`) | Phase 1 (core) |
 | 16 | `pip-nat-core` | `azurerm_public_ip` | Standard, Static | Static public IP for NAT Gateway egress. | — | Phase 1 (core) |
 
 ---
@@ -87,7 +87,7 @@ One NSG per subnet, each with a default `DenyAll` at priority 4096 and only the 
 
 Each Private Endpoint–backed service requires a corresponding DNS zone linked to the VNet. Created by the `modules/private-dns` module.
 
-> **Note:** APIM in internal VNet mode does not use a Private Endpoint — it is injected directly into a delegated subnet. The APIM gateway FQDN resolves to its private IP automatically via Azure DNS in internal VNet mode; no `privatelink.azure-api.net` zone is required. That zone is a Premium-tier Private Endpoint feature and is not applicable here.
+> **Note:** APIM in internal VNet mode does not use a Private Endpoint — it is injected directly into a delegated subnet. An `azure-api.net` Private DNS Zone is created and linked to the VNet, with an A record (`apim-wkld-shared-<env>`) pointing to APIM's private IP. This allows VNet clients to resolve the APIM gateway hostname to its internal address.
 
 | # | Zone Name | Type | Used By | Phase |
 |---|----------|------|---------|-------|
@@ -98,14 +98,15 @@ Each Private Endpoint–backed service requires a corresponding DNS zone linked 
 | 21 | `privatelink.queue.core.windows.net` | `azurerm_private_dns_zone` | Storage Account (queue) | Phase 1 |
 | 22 | `privatelink.azurecr.io` | `azurerm_private_dns_zone` | Azure Container Registry | Phase 1 |
 | 23 | `privatelink.azurewebsites.net` | `azurerm_private_dns_zone` | Function App | Phase 1 |
+| 24 | `azure-api.net` | `azurerm_private_dns_zone` | APIM internal VNet mode (gateway hostname resolution) | Phase 1 |
 
 ### 3.1 Private DNS Zone VNet Links
 
-One link resource per zone, binding it to the VNet so all subnets resolve Private Endpoint FQDNs via Azure DNS (`168.63.129.16`).
+One link resource per zone, binding it to the VNet so all subnets resolve Private Endpoint FQDNs and APIM gateway hostnames via Azure DNS (`168.63.129.16`).
 
 | # | Resource | Type | Purpose | Phase |
 |---|---------|------|---------|-------|
-| 24–30 | One `azurerm_private_dns_zone_virtual_network_link` per zone (×7) | `azurerm_private_dns_zone_virtual_network_link` | Enables in-VNet resolution of private endpoint DNS records. | Phase 1 |
+| 25–32 | One `azurerm_private_dns_zone_virtual_network_link` per zone (×8) | `azurerm_private_dns_zone_virtual_network_link` | Enables in-VNet resolution of private endpoint DNS records and APIM gateway hostname. | Phase 1 |
 
 ---
 
@@ -123,12 +124,15 @@ One link resource per zone, binding it to the VNet so all subnets resolve Privat
 | # | Resource Name | Type | SKU | Purpose | Details | Phase |
 |---|--------------|------|-----|---------|---------|-------|
 | 33 | `apim-wkld-shared-dev` | `azurerm_api_management` | **Developer** | Per-env API front door. Terminates mTLS, routes to Function App backends, centralises request logging and policy enforcement. | Internal VNet mode. Deployed into `snet-apim` (delegated). No public endpoint. System-assigned MI. | Phase 1 (env) |
+| — | `apim-wkld-shared-dev` A record | `azurerm_private_dns_a_record` | — | DNS resolution for APIM gateway inside the VNet. | A record in the `azure-api.net` Private DNS Zone pointing to APIM's private IP. TTL 300s. | Phase 1 (env) |
 
-### 4.4 Log Analytics Workspace + Diagnostic Storage
+### 4.4 Log Analytics Workspace
 
 | # | Resource Name | Type | SKU | Purpose | Details | Phase |
 |---|--------------|------|-----|---------|---------|-------|
 | 34 | `law-core` | `azurerm_log_analytics_workspace` | **PerGB2018** | Central log sink for all diagnostic settings and App Insights backend. Shared across all environments. | 30 day retention. Resource group: `rg-core`. | Phase 1 (core) |
+
+> **Note:** No diagnostic storage account (`stdiagcore`) is created. NSG flow logs are disabled (Azure blocked new NSG flow log creation from June 2025), removing the need for a flow-log storage account.
 
 ---
 
@@ -140,7 +144,7 @@ All resources below are created by the `modules/workload-stamp` module for stamp
 
 | # | Resource Name | Type | SKU | Purpose | Details | Phase |
 |---|--------------|------|-----|---------|---------|-------|
-| 36 | `asp-wkld-1-dev` | `azurerm_service_plan` | **P1v3** | Linux App Service Plan hosting the Function App. | P1v3 is the minimum SKU supporting VNet integration + Linux containers. Shared across Function Apps within the stamp. | Phase 1 (env) |
+| 36 | `asp-wkld-1-dev` | `azurerm_service_plan` | **B1** | Linux App Service Plan hosting the Function App. | Module default is P1v3 but overridden to B1 in `phase1/env/workload.tf` for cost efficiency in this assessment. Shared across Function Apps within the stamp. | Phase 1 (env) |
 | 37 | `func-wkld-1-api-dev` | `azurerm_linux_function_app` | — (inherits ASP) | Python HTTP-triggered Function App, deployed as a Docker container from ACR. | System-assigned Managed Identity. `public_network_access_enabled = false`. HTTPS only. TLS 1.2 minimum. VNet integrated via `snet-stamp-dev-1-asp`. | Phase 1 (env) |
 
 ### 5.2 Storage
@@ -183,6 +187,7 @@ All resources below are created by the `modules/workload-stamp` module for stamp
 | 49 | `pip-jumpbox-core` | `azurerm_public_ip` | Standard, Static | Public IP for RDP ingress to jump box. | In production, replace with Azure Bastion. Resource group: `rg-core`. | Phase 1 (core) |
 | 50 | OS Disk | `azurerm_managed_disk` (implicit) | **Premium_LRS** | Boot disk for Windows 11. | Created implicitly by the VM resource. | Phase 1 (core) |
 | 51 | `AADLoginForWindows` | `azurerm_virtual_machine_extension` | — | VM extension enabling Entra ID sign-in on jump box. | Supplements local admin with Entra ID authentication. | Phase 1 (core) |
+| — | Custom Script Extension | `azurerm_virtual_machine_extension` | — | Downloads and runs `Setup-Jumpbox.ps1` from blob storage. | Installs Azure CLI, Git for Windows, and copies the `Test-Application-Jumpbox.ps1` end-to-end test script. | Phase 1 (core) |
 
 ### 6b. Self-Hosted Runner
 
@@ -208,6 +213,14 @@ These are not Azure resources per se but are logical artefacts created by Terraf
 
 ## 8. Identity & Role Assignments
 
+### 8.1 Entra ID App Registrations
+
+| # | Resource | Type | Purpose | Phase |
+|---|---------|------|---------|-------|
+| — | `app-func-wkld-1-api-dev` | `azuread_application` + `azuread_service_principal` | Entra ID app registration representing the Function App as a token audience. EasyAuth validates that incoming tokens target this app’s client ID. Identifier URI: `api://<tenant_id>/func-wkld-1-api-dev`. | Phase 1 (env) |
+
+### 8.2 Role Assignments
+
 | # | Resource | Type | Scope | Purpose | Phase |
 |---|---------|------|-------|---------|-------|
 | 52 | Function App System-Assigned MI | Implicit (part of `func-wkld-1-api-dev`) | — | Identity used for all service-to-service calls from the Function App. | Phase 1 (env) |
@@ -216,6 +229,7 @@ These are not Azure resources per se but are logical artefacts created by Terraf
 | 55 | Role: **Key Vault Certificate User** | `azurerm_role_assignment` | Key Vault (`kv-wkld-1-dev`) | APIM system-assigned MI → read CA certificate from per-stamp Key Vault for mTLS policy. | Phase 1 (env) |
 | 56 | Role: **Key Vault Secrets User** | `azurerm_role_assignment` | Key Vault (`kv-wkld-1-dev`) | APIM system-assigned MI → read secrets from per-stamp Key Vault. | Phase 1 (env) |
 | 57 | Role: **Key Vault Administrator** | `azurerm_role_assignment` | Key Vault (`kv-wkld-1-dev`) | CI/CD SP → write certificates and secrets in Phase 3. | Phase 1 (env) |
+| — | Role: **Key Vault Secrets Officer** | `azurerm_role_assignment` | Key Vault (`kv-wkld-1-dev`) | Admin user (from `admin_user_upn`) → portal/CLI access to Key Vault secrets. | Phase 1 (env) |
 | 58 | Role: **Storage Blob Data Owner** | `azurerm_role_assignment` | Storage (`stwkld1dev`) | Function App MI → manage blob storage. | Phase 1 (env) |
 | 59 | Role: **Storage Queue Data Contributor** | `azurerm_role_assignment` | Storage (`stwkld1dev`) | Function App MI → manage queue storage. | Phase 1 (env) |
 | 60 | Role: **Storage Table Data Contributor** | `azurerm_role_assignment` | Storage (`stwkld1dev`) | Function App MI → manage table storage. | Phase 1 (env) |
@@ -231,11 +245,13 @@ Streaming logs and metrics from every resource to the shared Log Analytics Works
 | 61 | `func-wkld-1-api-dev` (Function App) | FunctionAppLogs | Phase 1 (env) |
 | 62 | `asp-wkld-1-dev` (App Service Plan) | Metrics only (no diagnostic logs for ASP) | Phase 1 (env) |
 | 63 | `stwkld1dev` (Storage — blob/queue/table) | StorageRead, StorageWrite, StorageDelete + Transaction metrics | Phase 1 (env) |
-| 64 | `kv-wkld-1-dev` (Key Vault) | AuditEvent, AzurePolicyEvaluationDetails | Phase 1 (env) |
+| 64 | `kv-wkld-1-dev` (Key Vault) | AuditEvent | Phase 1 (env) |
 | 65 | `acrcore` (ACR) | ContainerRegistryLoginEvents, ContainerRegistryRepositoryEvents | Phase 1 (core) |
 | 66 | `apim-wkld-shared-dev` (APIM) | GatewayLogs, WebSocketConnectionLogs | Phase 1 (env) |
 | 67 | `law-core` (Log Analytics Workspace) | Audit (self-diagnostic) | Phase 1 (core) |
 | ~~68~~ | ~~NSG Flow Logs~~ | *(Disabled — Azure blocked new NSG flow log creation from June 2025. The `flow_logs_enabled` flag is set to `false` in both `modules/vnet` and `modules/workload-stamp-subnet`.)* | — |
+
+> **Note:** The `stdiagcore` diagnostic storage account documented in earlier revisions is no longer created. NSG flow logs (which required it) are disabled.
 
 ---
 
@@ -280,8 +296,8 @@ The runner is a self-hosted Ubuntu 22.04 VM (`vm-runner-core`) in `snet-runner`,
 | Network Security Groups | 8 (4 fixed + 2 per stamp × 2 stamps) |
 | NAT Gateway + Public IP (NAT) | 2 |
 | Jump Box Public IP | 1 |
-| Private DNS Zones | 7 |
-| Private DNS Zone VNet Links | 7 |
+| Private DNS Zones | 8 |
+| Private DNS Zone VNet Links | 8 |
 | ACR Private Endpoint | 1 |
 | Key Vault Private Endpoint | 2 (one per stamp) |
 | Storage Private Endpoints | 8 (4 per stamp × 2 stamps) |
@@ -290,7 +306,7 @@ The runner is a self-hosted Ubuntu 22.04 VM (`vm-runner-core`) in `snet-runner`,
 | Key Vault | 2 (one per stamp) |
 | API Management (APIM) | 1 |
 | Log Analytics Workspace | 1 (shared) |
-| ~~Diagnostic Storage Account~~ | ~~1 (removed — NSG flow logs disabled)~~ |
+| ~~Diagnostic Storage Account~~ | ~~0 (removed — NSG flow logs disabled, no flow-log storage account created)~~ |
 | App Service Plan | 2 (one per stamp) |
 | Function App | 2 (one per stamp) |
 | Storage Account | 2 (one per stamp) |
@@ -298,11 +314,12 @@ The runner is a self-hosted Ubuntu 22.04 VM (`vm-runner-core`) in `snet-runner`,
 | Jump Box (VM + NIC + PIP + Disk + Extension) | 5 (shared) |
 | Self-Hosted Runner (VM + NIC + Extensions) | 4 (shared) |
 | Certificates (CA + Client) | 2 |
-| Role Assignments | ~9 per stamp (×2) = ~18 |
+| Entra ID App Registrations | 2 (one per stamp) |
+| Role Assignments | ~10 per stamp (×2) = ~20 |
 | Diagnostic Settings | ~8 per stamp + 4 shared = ~20 |
 | Monitor Alerts + Action Group | 3 per env (Phase 3) |
 | APIM Config (Backend + API + Operations + Policy) | 4 per env (Phase 3) |
-| **Total (approximate)** | **~120** |
+| **Total (approximate)** | **~125** |
 
 ---
 
@@ -313,7 +330,7 @@ The runner is a self-hosted Ubuntu 22.04 VM (`vm-runner-core`) in `snet-runner`,
 | ACR | **Premium** | Required for Private Endpoint support. Name uses subscription ID prefix for global uniqueness. |
 | Key Vault | **Standard** | Sufficient for secrets and certificate storage. No HSM-backed keys needed. |
 | APIM | **Developer** | Assessment constraint (TC-5). Supports internal VNet mode. Not for production (no SLA). |
-| App Service Plan | **P1v3** | Minimum tier supporting VNet integration + Linux containers. |
+| App Service Plan | **B1** | Overridden from module default P1v3 to B1 for cost efficiency in this assessment. |
 | Log Analytics | **PerGB2018** | Pay-as-you-go; no commitment tier needed for assessment workload. |
 | NAT Gateway | **Standard** | Only available SKU. |
 | Public IPs (×2) | **Standard, Static** | Required for NAT Gateway and jump box RDP. |

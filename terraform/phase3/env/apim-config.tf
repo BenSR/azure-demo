@@ -28,7 +28,7 @@ locals {
     join("\n", [
       "        <when condition=\"@((int)context.Variables[&quot;stamp-index&quot;] == ${i})\">",
       "          <authentication-managed-identity",
-      "            resource=\"api://func-${local.workload}-${k}-api-${local.environment}\"",
+      "            resource=\"api://${data.azuread_client_config.current.tenant_id}/func-${local.workload}-${k}-api-${local.environment}\"",
       "            output-token-variable-name=\"msi-access-token\" />",
       "          <set-header name=\"Authorization\" exists-action=\"override\">",
       "            <value>@(\"Bearer \" + (string)context.Variables[\"msi-access-token\"])</value>",
@@ -172,7 +172,7 @@ resource "azurerm_api_management_api_operation" "wkld" {
 # via the Azure portal or the Management REST API.
 #
 # NOTE: The Entra app registration identifier_uri is constructed deterministically
-# as api://func-<workload>-<stamp>-api-<env> (same convention as phase1/env).
+# as api://<tenant-id>/func-<workload>-<stamp>-api-<env> (same convention as phase1/env).
 
 resource "azurerm_api_management_api_policy" "wkld" {
   api_name            = azurerm_api_management_api.wkld.name
