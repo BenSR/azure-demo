@@ -21,17 +21,17 @@ mock_provider "azuread" {
 }
 
 variables {
-  stamp_number        = 1
-  environment         = "dev"
-  resource_group_name = "rg-wkld-dev"
-  location            = "uksouth"
-  subnet_id           = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.Network/virtualNetworks/vnet-wkld-shared-dev/subnets/snet-stamp-dev-1-asp"
+  stamp_number               = 1
+  environment                = "dev"
+  resource_group_name        = "rg-wkld-dev"
+  location                   = "uksouth"
+  subnet_id                  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.Network/virtualNetworks/vnet-wkld-shared-dev/subnets/snet-stamp-dev-1-asp"
   private_endpoint_subnet_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.Network/virtualNetworks/vnet-wkld-shared-dev/subnets/snet-stamp-dev-1-pe"
-  acr_id              = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.ContainerRegistry/registries/acrcore"
+  acr_id                     = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.ContainerRegistry/registries/acrcore"
   log_analytics_workspace_id = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.OperationalInsights/workspaces/law-core"
-  apim_principal_id   = "44444444-4444-4444-4444-444444444444"
-  entra_app_client_id = "55555555-5555-5555-5555-555555555555"
-  admin_user_principal_name = "admin@example.com"
+  apim_principal_id          = "44444444-4444-4444-4444-444444444444"
+  entra_app_client_id        = "55555555-5555-5555-5555-555555555555"
+  admin_user_principal_name  = "admin@example.com"
   private_dns_zone_ids = {
     blob_storage_zone_id  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"
     file_storage_zone_id  = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-core-dev/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net"

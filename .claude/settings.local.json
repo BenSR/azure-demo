@@ -10,7 +10,10 @@
       "Bash(pip install -q pydantic azure-functions pytest)",
       "Bash(python -m pytest tests/ -v)",
       "Bash(terraform fmt -check -recursive terraform/phase3/)",
-      "Bash(pip install -q azure-monitor-opentelemetry)"
+      "Bash(pip install -q azure-monitor-opentelemetry)",
+      "Bash(terraform fmt -recursive terraform/)",
+      "Bash(terraform fmt -check -recursive terraform/)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

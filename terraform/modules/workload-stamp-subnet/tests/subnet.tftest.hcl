@@ -5,15 +5,15 @@
 mock_provider "azurerm" {}
 
 variables {
-  environment     = "dev"
-  stamp_name      = "1"
-  stamp_index     = 0
-  subnet_pe_cidr  = "10.100.0.0/24"
-  subnet_asp_cidr = "10.100.1.0/24"
-  vnet_name       = "vnet-wkld-shared-dev"
+  environment         = "dev"
+  stamp_name          = "1"
+  stamp_index         = 0
+  subnet_pe_cidr      = "10.100.0.0/24"
+  subnet_asp_cidr     = "10.100.1.0/24"
+  vnet_name           = "vnet-wkld-shared-dev"
   resource_group_name = "rg-core-dev"
-  location        = "uksouth"
-  nsg_name_prefix = "nsg-core"
+  location            = "uksouth"
+  nsg_name_prefix     = "nsg-core"
   shared_subnet_cidrs = {
     apim      = "10.100.129.32/27"
     shared_pe = "10.100.130.0/24"
