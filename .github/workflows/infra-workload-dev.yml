@@ -1,6 +1,6 @@
 name: "Infra — Workload — Dev Apply"
 
-# Runs on merge to dev. Applies phase1/env (public runner), then phase3
+# Runs on merge to dev. Applies phase1/env (public runner), then phase2
 # (self-hosted runner, required for private Key Vault and APIM endpoints).
 
 on:
@@ -8,7 +8,7 @@ on:
     branches: [dev]
     paths:
       - "terraform/phase1/env/**"
-      - "terraform/phase3/**"
+      - "terraform/phase2/**"
       - "terraform/modules/**"
       - ".github/workflows/infra-workload-dev.yml"
 
@@ -25,7 +25,7 @@ env:
   ARM_USE_OIDC: "true"
   TF_VERSION: "~1.7"
   ENV_ROOT: "terraform/phase1/env"
-  PH3_ROOT: "terraform/phase3/env"
+  PH3_ROOT: "terraform/phase2/env"
 
 jobs:
   apply-infra:
@@ -133,7 +133,7 @@ jobs:
             -backend-config="resource_group_name=rg-core-deploy" \
             -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=phase3.tfstate"
+            -backend-config="key=phase2.tfstate"
 
       - name: "Terraform workspace — dev"
         run: |
@@ -148,11 +148,11 @@ jobs:
             -var-file=dev.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -var='alert_email_receivers=["${{ secrets.ADMIN_EMAIL }}"]' \
-            -out=/tmp/tfplan-phase3-dev \
+            -out=/tmp/tfplan-phase2-dev \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
-            echo "## phase3 Plan — \`dev\`"
+            echo "## phase2 Plan — \`dev\`"
             echo ""
             echo '```'
             cat /tmp/plan-output.txt
@@ -164,10 +164,10 @@ jobs:
           set -o pipefail
           terraform -chdir=${{ env.PH3_ROOT }} apply \
             -no-color \
-            /tmp/tfplan-phase3-dev 2>&1 | tee /tmp/apply-output.txt
+            /tmp/tfplan-phase2-dev 2>&1 | tee /tmp/apply-output.txt
 
           {
-            echo "## phase3 Apply — \`dev\`"
+            echo "## phase2 Apply — \`dev\`"
             echo ""
             echo "| | |"
             echo "|---|---|"

@@ -19,16 +19,16 @@ terraform {
   #   resource_group_name  = "rg-core-deploy"
   #   storage_account_name = "<your-state-storage-account>"
   #   container_name       = "tfstate"
-  #   key                  = "phase3.tfstate"
+  #   key                  = "phase2.tfstate"
   #
-  # Phase 3 is workspace-driven (dev/prod).  Use the same workspace as
+  # Phase 2 is workspace-driven (dev/prod).  Use the same workspace as
   # the phase1/env deployment it targets:
   #
-  #   terraform -chdir=terraform/phase3/env workspace select dev
-  #   terraform -chdir=terraform/phase3/env apply \
+  #   terraform -chdir=terraform/phase2/env workspace select dev
+  #   terraform -chdir=terraform/phase2/env apply \
   #     -var-file=terraform.tfvars -var-file=dev.tfvars
   #
-  # Phase 3 MUST run from a VNet-injected runner (snet-runner subnet) so it
+  # Phase 2 MUST run from a VNet-injected runner (snet-runner subnet) so it
   # can reach Key Vault and APIM Private Endpoints.
   backend "azurerm" {}
 }

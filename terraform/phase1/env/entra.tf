@@ -5,9 +5,9 @@
 # validates the `aud` claim before any function code runs (Section 12.3,
 # app-planning.md).
 #
-# Placed here (phase1/env) rather than phase3 so the client_id is available
+# Placed here (phase1/env) rather than phase2 so the client_id is available
 # when the Function App is deployed — auth_settings_v2 in the workload-stamp
-# module needs the client_id at apply time, before Phase 3 runs.
+# module needs the client_id at apply time, before Phase 2 runs.
 #
 # No client secret or certificate is created — this registration receives tokens
 # (it is an audience); it does not request them.

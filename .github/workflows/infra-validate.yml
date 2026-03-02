@@ -60,10 +60,10 @@ jobs:
           terraform -chdir=terraform/phase1/env init -backend=false
           terraform -chdir=terraform/phase1/env validate
 
-      - name: "terraform validate — phase3/env"
+      - name: "terraform validate — phase2/env"
         run: |
-          terraform -chdir=terraform/phase3/env init -backend=false
-          terraform -chdir=terraform/phase3/env validate
+          terraform -chdir=terraform/phase2/env init -backend=false
+          terraform -chdir=terraform/phase2/env validate
 
       - name: "terraform test — modules/vnet"
         run: |

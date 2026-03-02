@@ -1,7 +1,7 @@
 name: "Infra — Workload — Prod Apply"
 
 # Runs on merge to main. phase1/env (workload infra) is planned, approved, and
-# applied first. phase3 (APIM config) is then planned on the self-hosted runner
+# applied first. phase2 (APIM config) is then planned on the self-hosted runner
 # — which has VNet access to read the Key Vault and APIM endpoints written by
 # phase1/env — and requires a second approval before applying.
 #
@@ -13,7 +13,7 @@ on:
     branches: [main]
     paths:
       - "terraform/phase1/env/**"
-      - "terraform/phase3/**"
+      - "terraform/phase2/**"
       - "terraform/modules/**"
       - ".github/workflows/infra-workload-prod.yml"
 
@@ -30,7 +30,7 @@ env:
   ARM_USE_OIDC: "true"
   TF_VERSION: "~1.7"
   ENV_ROOT: "terraform/phase1/env"
-  PH3_ROOT: "terraform/phase3/env"
+  PH3_ROOT: "terraform/phase2/env"
 
 jobs:
   plan-infra:
@@ -216,7 +216,7 @@ jobs:
             -backend-config="resource_group_name=rg-core-deploy" \
             -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=phase3.tfstate"
+            -backend-config="key=phase2.tfstate"
 
       - name: "Terraform workspace — prod"
         run: |
@@ -235,7 +235,7 @@ jobs:
             -no-color 2>&1 | tee /tmp/plan-output.txt
 
           {
-            echo "## Prod workload config Plan (phase3)"
+            echo "## Prod workload config Plan (phase2)"
             echo ""
             echo "> [!IMPORTANT]"
             echo "> Review this plan, then approve the **Prod workload config — Approve** job to apply."
@@ -303,7 +303,7 @@ jobs:
             -backend-config="resource_group_name=rg-core-deploy" \
             -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=phase3.tfstate"
+            -backend-config="key=phase2.tfstate"
 
       - name: "Terraform workspace — prod"
         run: terraform -chdir=${{ env.PH3_ROOT }} workspace select prod
@@ -325,7 +325,7 @@ jobs:
             /tmp/tfplan-apim-prod 2>&1 | tee /tmp/apply-output.txt
 
           {
-            echo "## Prod workload config Apply (phase3)"
+            echo "## Prod workload config Apply (phase2)"
             echo ""
             echo "| | |"
             echo "|---|---|"

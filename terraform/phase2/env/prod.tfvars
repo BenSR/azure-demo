@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# prod.tfvars — prod workspace overrides for phase3
+# prod.tfvars — prod workspace overrides for phase2
 #
 # Usage:
-#   terraform -chdir=terraform/phase3/env workspace select prod
-#   terraform -chdir=terraform/phase3/env apply \
+#   terraform -chdir=terraform/phase2/env workspace select prod
+#   terraform -chdir=terraform/phase2/env apply \
 #     -var-file=terraform.tfvars -var-file=prod.tfvars
 # ─────────────────────────────────────────────────────────────────────────────
 
