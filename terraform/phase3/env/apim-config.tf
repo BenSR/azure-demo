@@ -102,7 +102,10 @@ resource "azurerm_api_management_backend" "func" {
 
   # function_app_hostnames: map of stamp → (map of func-name → default hostname)
   # One Function App per stamp; use `one(values(...))` to extract the single hostname.
-  url = "https://${one(values(local.env.function_app_hostnames[each.key]))}"
+  # Include /api so the Function App's host.json routePrefix is preserved —
+  # APIM strips the API-level path (/api) before forwarding, so the backend
+  # URL must re-add it.
+  url = "https://${one(values(local.env.function_app_hostnames[each.key]))}/api"
 
   tls {
     # Function Apps use Azure-managed *.azurewebsites.net certs; the PE hostname

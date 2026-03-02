@@ -9,9 +9,9 @@ Detailed network topology, subnet layout, NAT Gateway configuration, and per-sub
 | Principle | Implementation |
 |-----------|---------------|
 | **Zero public internet exposure** | All PaaS services behind Private Endpoints. APIM in internal VNet mode. Function App `public_network_access_enabled = false`. |
-| **Least-privilege NSG rules** | One NSG per subnet. Explicit deny-all as the final custom rule; allow only the minimum traffic each subnet requires. |
-| **Deterministic egress** | NAT Gateway with a static Public IP attached to the runner subnet — the sole subnet whose NSG permits internet egress. All other subnets have `DenyAllOutbound` at NSG level. |
-| **Private DNS resolution** | Azure Private DNS Zones linked to the VNet. All subnets resolve private endpoint FQDNs via Azure DNS (`168.63.129.16`). |
+| **Least-privilege NSG rules** | One NSG per subnet. Explicit deny at the final custom rule (priority 4000); allow only the minimum traffic each subnet requires. |
+| **Deterministic egress** | NAT Gateway with a static Public IP is attached to all subnets in the VNet (via `modules/vnet` `attach_nat_gateway = true`). However, only `snet-runner` and `snet-jumpbox` have NSG rules permitting internet-bound egress. All other subnets have deny-internet or deny-all outbound at NSG level, ensuring no internet traffic escapes. |
+| **Private DNS resolution** | 8 Azure Private DNS Zones (7 privatelink zones + `azure-api.net` for APIM) linked to the VNet. All subnets resolve private endpoint FQDNs and APIM gateway hostnames via Azure DNS (`168.63.129.16`). |
 | **Private Endpoint Network Policies** | Enabled on PE subnets (`private_endpoint_network_policies = "Enabled"`) so that NSG rules apply to Private Endpoint traffic. |
 
 ---
@@ -83,19 +83,21 @@ The self-hosted runner VM (`vm-runner-core`) is the **only** component that requ
 |-----------|-------|
 | **Name** | `nat-core` |
 | **Public IP** | `pip-nat-core` (static Standard SKU) |
-| **Associated Subnet** | `snet-runner` only |
+| **Associated Subnet** | All subnets (via `modules/vnet` `attach_nat_gateway = true`) |
 | **Idle Timeout** | 4 minutes (default) |
 
-### Why Only the Runner Subnet?
+> **Note:** While the NAT Gateway is attached to all subnets, only `snet-runner` and `snet-jumpbox` have NSG rules permitting internet-bound outbound traffic. All other subnets deny internet egress at the NSG level, so the NAT Gateway association has no practical effect on them.
+
+### Why Not Per-Subnet NAT Gateway?
 
 | Subnet | Internet Egress Required? | Reason |
 |--------|--------------------------|--------|
-| `snet-stamp-1-pe` | No | Private Endpoints are inbound-only listeners; they do not initiate connections. |
-| `snet-stamp-1-asp` | No | Function App communicates exclusively with Private Endpoints (Storage, ACR, Key Vault) and Azure Monitor via service tag. No internet dependency. |
+| `snet-stamp-1-pe` | No | Private Endpoints are inbound-only listeners; they do not initiate connections. NSG denies all outbound at priority 4000. |
+| `snet-stamp-1-asp` | No | Function App communicates exclusively with Private Endpoints (Storage, ACR, Key Vault) and Azure Monitor via service tag. NSG denies internet outbound at priority 4000. |
 | `snet-apim` | No | APIM internal mode. Required outbound dependencies (Storage, SQL, Key Vault, Event Hub, Azure Monitor) are reached via Azure service tags, not internet routes. |
-| `snet-shared-pe` | No | Private Endpoints are inbound-only listeners. |
+| `snet-shared-pe` | No | Private Endpoints are inbound-only listeners. NSG denies all outbound at priority 4000. |
 | `snet-runner` | **Yes** | GitHub Actions runner agent polling, pulling packages (pip/apt), Azure ARM API (Terraform), Docker build and push to ACR. |
-| `snet-jumpbox` | No | Jump box connects to internal resources only. Inbound RDP from internet; outbound to PE subnets within the VNet. No general internet egress required. |
+| `snet-jumpbox` | **Limited** | Jump box has outbound HTTPS (priority 150) and HTTP (priority 160) to the internet for Azure CLI downloads and Entra ID authentication, but `deny-outbound-internet` at priority 4000 blocks all other internet-bound traffic on non-standard ports. |
 
 ---
 
@@ -183,7 +185,7 @@ graph LR
 
 ## 6. NSG Design — Per-Subnet Rules
 
-Each subnet has a dedicated NSG. Custom rules are numbered 100–4096 (4000 used for explicit deny-all). A `DenyAll` rule at priority 4000 catches any traffic not explicitly permitted. Azure default rules (65000+) exist but are superseded by the explicit deny.
+Each subnet has a dedicated NSG. Custom rules are numbered 100–4000. Where present, a `DenyAll` rule at priority 4000 catches any traffic not explicitly permitted (some subnets rely on Azure's built-in default deny at priority 65500 instead). Azure default rules (65000+) exist on all NSGs regardless.
 
 > **Convention:** Rule names use kebab-case (`allow-inbound-apim`, `deny-all-outbound`). Service tag names follow Azure conventions (e.g., `AzureMonitor`, `ApiManagement`, `Storage`).
 
@@ -212,13 +214,13 @@ NSG names are derived from the VNet name:
 | 110 | allow-inbound-asp | `stamp.subnet_asp_cidr` | `*` | 443 | TCP | **Allow** | Function App (VNet-integrated in its own ASP subnet) accesses its Storage Account PEs. |
 | 120 | allow-inbound-runner | `var.subnet_cidrs.runner` | `*` | 443 | TCP | **Allow** | GitHub Runner performs Terraform data-plane operations on Storage (Phase 3). |
 | 130 | allow-inbound-jumpbox | `var.subnet_cidrs.jumpbox` | `*` | 443 | TCP | **Allow** | Jump box → Function App PE, Storage PEs (diagnostics and validation). |
-| 4096 | deny-all-outbound | `*` | `*` | `*` | `*` | **Deny** | Default deny — no other source may reach stamp Private Endpoints. |
+| 4000 | deny-all-inbound | `*` | `*` | `*` | `*` | **Deny** | Default deny — no other source may reach stamp Private Endpoints. |
 
 #### Outbound Rules
 
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
-| 4096 | deny-all-outbound | `*` | `*` | `*` | `*` | **Deny** | Private Endpoints do not initiate outbound connections. NSG statefulness handles return traffic for allowed inbound flows. |
+| 4000 | deny-all-outbound | `*` | `*` | `*` | `*` | **Deny** | Private Endpoints do not initiate outbound connections. NSG statefulness handles return traffic for allowed inbound flows. |
 
 ---
 
@@ -233,18 +235,18 @@ NSG names are derived from the VNet name:
 
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
-| 100 | AllowAzureLBProbes | `AzureLoadBalancer` | `10.155.1.0/24` | `*` | `*` | **Allow** | Azure infrastructure health probes for App Service Plan. |
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | No application traffic enters via the VNet integration subnet. |
+| 100 | allow-inbound-azure-lb | `AzureLoadBalancer` | `*` | `*` | `*` | **Allow** | Azure infrastructure health probes for App Service Plan. |
+| *(no deny-all — Azure default rules apply)* | | | | | | | |
 
 #### Outbound Rules
 
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
-| 100 | AllowToStampPE | `10.155.1.0/24` | `10.155.0.0/24` | 443 | TCP | **Allow** | Function App → Storage Account PEs (blob, file, table, queue). |
-| 110 | AllowToSharedPE | `10.155.1.0/24` | `10.155.3.0/24` | 443 | TCP | **Allow** | Function App → ACR PE (container image pull), Key Vault PE (secret retrieval). |
-| 120 | AllowToAzureMonitor | `10.155.1.0/24` | `AzureMonitor` | 443 | TCP | **Allow** | App Insights telemetry ingestion and diagnostic data. |
-| 130 | AllowDNS | `10.155.1.0/24` | `168.63.129.16/32` | 53 | Any | **Allow** | Azure DNS resolution for Private DNS Zones. |
-| 4096 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | **No internet egress.** Function App has no legitimate need to reach the public internet. |
+| 100 | allow-outbound-stamp-pe | `*` | `<stamp-pe-cidr>` | 443 | TCP | **Allow** | Function App → Storage Account PEs (blob, file, table, queue), Key Vault PE. |
+| 110 | allow-outbound-shared-pe | `*` | `10.100.130.0/24` | 443 | TCP | **Allow** | Function App → ACR PE (container image pull). |
+| 120 | allow-outbound-azure-monitor | `*` | `AzureMonitor` | 443 | TCP | **Allow** | App Insights telemetry ingestion and diagnostic data. |
+| 130 | allow-outbound-dns | `*` | `*` | 53 | Any | **Allow** | Azure DNS resolution for Private DNS Zones. |
+| 4000 | deny-outbound-internet | `*` | `Internet` | `*` | `*` | **Deny** | **No internet egress.** Function App has no legitimate need to reach the public internet. Denies `Internet` destination specifically; VNet-internal traffic is unaffected. |
 
 ---
 
@@ -263,7 +265,7 @@ APIM in internal VNet mode has **mandatory NSG requirements** documented by Micr
 | 110 | AllowManagementPlane | `ApiManagement` | `VirtualNetwork` | 3443 | TCP | **Allow** | **(Required)** Azure management plane → APIM control plane. |
 | 120 | AllowAzureLBHealth | `AzureLoadBalancer` | `10.100.129.32/27` | 65200-65535 | TCP | **Allow** | **(Required)** Azure infrastructure health probes for APIM. |
 | 130 | AllowJumpboxToApim | `10.100.129.0/27` | `10.100.129.32/27` | 443 | TCP | **Allow** | Jump box → APIM gateway for API testing with mTLS client certificate. |
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | No other source may reach APIM. |
+| *(no deny-all-inbound — APIM outbound rules + Azure defaults control traffic)* | | | | | | | |
 
 #### Outbound Rules
 
@@ -278,7 +280,7 @@ APIM in internal VNet mode has **mandatory NSG requirements** documented by Micr
 | 160 | AllowToAzureAD | `*` | `AzureActiveDirectory` | 443 | TCP | **Allow** | **(Required)** Azure AD authentication for APIM management and developer portal. |
 | 170 | AllowToKeyVault | `*` | `AzureKeyVault` | 443 | TCP | **Allow** | **(Required)** APIM platform dependency on Key Vault. |
 | 180 | AllowDNS | `*` | `*` | 53 | Any | **Allow** | Azure DNS resolution for Private DNS Zones and platform services. |
-| 4096 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | **No internet egress.** All required APIM dependencies are addressed via service tags above. |
+| *(no deny-all-outbound — APIM mandatory service tag rules + Azure defaults control traffic)* | | | | | | | |
 
 ---
 
@@ -297,13 +299,13 @@ APIM in internal VNet mode has **mandatory NSG requirements** documented by Micr
 | 110 | AllowRunnerToSharedPE | `10.100.128.0/24` | `*` | 443 | TCP | **Allow** | GitHub Runner → ACR PE (image push via `az acr login`). |
 | 120 | AllowApimToSharedPE | `10.100.129.32/27` | `*` | 443 | TCP | **Allow** | APIM → ACR PE. |
 | 130 | AllowJumpboxToSharedPE | `10.100.129.0/27` | `*` | 443 | TCP | **Allow** | Jump box → ACR PE (image verification and diagnostics). |
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | No other source may reach shared Private Endpoints. |
+| *(no deny-all-inbound — Azure default rules apply)* | | | | | | | |
 
 #### Outbound Rules
 
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
-| 4096 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | Private Endpoints do not initiate outbound connections. |
+| 4000 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | Private Endpoints do not initiate outbound connections. |
 
 ---
 
@@ -319,7 +321,7 @@ The runner is the **only** resource with internet egress. It requires outbound c
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
 | 100 | AllowSSHFromJumpbox | `10.100.129.0/27` | `*` | 22 | TCP | **Allow** | SSH from jump box for runner VM management. Use `az ssh vm` with Entra ID credentials from the jump box. |
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | All other inbound traffic denied. |
+| 4000 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | All other inbound traffic denied. |
 
 #### Outbound Rules
 
@@ -330,7 +332,7 @@ The runner is the **only** resource with internet egress. It requires outbound c
 | 120 | AllowToInternetHTTPS | `*` | `Internet` | 443 | TCP | **Allow** | Runner → Internet via NAT GW: GitHub API, Azure ARM API (Terraform), pip/apt repos, Docker Hub. |
 | 130 | AllowToInternetHTTP | `*` | `Internet` | 80 | TCP | **Allow** | Runner → Internet via NAT GW: package repository metadata (some repos serve over HTTP). |
 | 140 | AllowDNS | `*` | `*` | 53 | Any | **Allow** | Azure DNS resolution for both Private DNS Zones and public DNS forwarding. |
-| 4096 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | Deny all other outbound (e.g., SSH, non-standard ports). |
+| *(no deny-all-outbound — Azure default rules apply; all legitimate paths are covered by allow rules above)* | | | | | | | |
 
 ---
 
@@ -346,7 +348,7 @@ The jump box provides developer/operator connectivity into the VNet for diagnost
 | Priority | Name | Source | Destination | Port | Protocol | Action | Justification |
 |----------|------|--------|-------------|------|----------|--------|---------------|
 | 100 | AllowRDPFromInternet | `Internet` | `*` | 3389 | TCP | **Allow** | RDP access to jump box. Authentication enforced via Entra ID — no local passwords. In production, replace with Azure Bastion. |
-| 4096 | DenyAllInbound | `*` | `*` | `*` | `*` | **Deny** | No other inbound traffic permitted. |
+| *(no deny-all-inbound — Azure default rules apply)* | | | | | | | |
 
 #### Outbound Rules
 
@@ -357,7 +359,9 @@ The jump box provides developer/operator connectivity into the VNet for diagnost
 | 120 | AllowToApim | `*` | `10.100.129.32/27` | 443 | TCP | **Allow** | Jump box → APIM gateway (API testing with mTLS client certificate). |
 | 130 | AllowToAzureAD | `*` | `AzureActiveDirectory` | 443 | TCP | **Allow** | Entra ID authentication for the AADLoginForWindows extension and user sign-in. |
 | 140 | AllowDNS | `*` | `*` | 53 | Any | **Allow** | Azure DNS resolution for Private DNS Zones. |
-| 4096 | DenyAllOutbound | `*` | `*` | `*` | `*` | **Deny** | **No internet egress.** The jump box is for internal diagnostics only, not general browsing. |
+| 150 | AllowToInternetHTTPS | `*` | `Internet` | 443 | TCP | **Allow** | Outbound HTTPS to the internet (Azure CLI downloads, Windows Update, Entra ID endpoints). |
+| 160 | AllowToInternetHTTP | `*` | `Internet` | 80 | TCP | **Allow** | Outbound HTTP to the internet (package metadata, CRL checks). |
+| 4000 | DenyOutboundInternet | `*` | `Internet` | `*` | `*` | **Deny** | Blocks all remaining non-standard-port internet traffic. Rules 150–160 permit only HTTPS and HTTP above this. |
 
 ---
 
@@ -367,11 +371,11 @@ The following table maps the user's stated network constraints to the specific N
 
 | Constraint | How Enforced |
 |------------|-------------|
-| **Only the self-hosted runner gets internet egress** | NAT Gateway attached to `snet-runner`. All other subnets have `DenyAllOutbound` at priority 4096 with no preceding internet-bound allow rules. The runner NSG has explicit `AllowToInternetHTTPS` (120) and `AllowToInternetHTTP` (130). |
+| **Only the self-hosted runner and jump box get internet egress** | NAT Gateway attached to all subnets for consistent egress routing. The runner NSG has explicit `AllowToInternetHTTPS` (120) and `AllowToInternetHTTP` (130). The jump box NSG allows outbound HTTPS (150) and HTTP (160) for Azure CLI, Windows Update, and Entra ID, with `DenyOutboundInternet` at 4000 blocking all other internet ports. All other subnets deny internet-bound traffic via deny rules at priority 4000 (targeting `Internet` service tag) or rely on Azure default rules with no preceding internet-bound allow rules. |
 | **Function App callable only via APIM** | `snet-stamp-1-pe` inbound rule 100 allows only `10.100.129.32/27` (APIM subnet) on port 443 to reach the Function App PE. No other subnet has a rule permitting traffic to the Function App PE. The ASP and runner rules against `snet-stamp-1-pe` target Storage PEs, not the Function App PE — but since NSGs operate at subnet level, this is a pragmatic trade-off documented in section 8. |
 | **ACR reachable from both Runner and Function App** | `snet-shared-pe` inbound rules 100 and 110 allow traffic from `snet-stamp-1-asp` (Function App) and `snet-runner` (self-hosted runner) respectively. Corresponding outbound rules on those source subnets permit egress to `10.100.130.0/24`. |
 | **Key Vault reachable from Function App, APIM, and Runner** | Key Vault is per-stamp in `snet-stamp-<N>-pe`. The existing `snet-stamp-1-pe` inbound rules (110 for ASP, 100 for APIM, 120 for runner, 130 for jumpbox) already cover this — no additional rules needed. KV PE shares the subnet with Function App and Storage PEs. |
-| **Jump box can reach all internal resources** | `snet-jumpbox` outbound rules 100–120 allow HTTPS to stamp PE (covering KV, Function App, Storage PEs), shared PE (ACR), and APIM subnets. Corresponding inbound rules on `snet-stamp-1-pe` (130), `snet-shared-pe` (120), and `snet-apim` allow traffic from `10.100.129.0/27`. Jump box has **no internet egress** — only inbound RDP and outbound to VNet resources. |
+| **Jump box can reach all internal resources** | `snet-jumpbox` outbound rules 100–120 allow HTTPS to stamp PE (covering KV, Function App, Storage PEs), shared PE (ACR), and APIM subnets. Corresponding inbound rules on `snet-stamp-1-pe` (130), `snet-shared-pe` (120), and `snet-apim` allow traffic from `10.100.129.0/27`. Jump box also has **limited internet egress** (HTTPS/HTTP only via rules 150–160) for Azure CLI, Windows Update, and Entra ID, with all other internet ports denied at priority 4000. |
 
 ---
 
@@ -390,7 +394,7 @@ For this design, the pragmatic decision is to **accept subnet-level granularity*
 
 ### APIM Mandatory NSG Rules
 
-APIM in internal VNet mode requires specific outbound connectivity to Azure platform services (Storage, SQL, Key Vault, Event Hub, Azure Monitor, Azure AD). These are handled via **service tags**, not internet egress. The APIM subnet's `DenyAllOutbound` rule at priority 4096 does **not** block these flows because the service tag rules at lower priority numbers (higher priority) match first.
+APIM in internal VNet mode requires specific outbound connectivity to Azure platform services (Storage, SQL, Key Vault, Event Hub, Azure Monitor, Azure AD). These are handled via **service tags**, not internet egress. The APIM subnet relies on Azure's default deny rules (priority 65500) to block residual traffic — there is no custom deny-all-outbound rule — because the explicit allow rules for APIM management and service tags at lower priority numbers (higher priority) match first.
 
 ### Private Endpoint Network Policies
 
@@ -437,7 +441,6 @@ NSG names are derived from the VNet name via `replace(vnet_name, "vnet-", "nsg-"
 | VNet | `vnet-core` | `vnet-core` |
 | ACR | `acrcore` | `acrcore` |
 | Log Analytics Workspace | `law-core` | `law-core` |
-| Diagnostic Storage | `stdiagcore` | `stdiagcore` |
 | Subnet (fixed) | `snet-<scope>` | `snet-apim`, `snet-runner` |
 | Subnet (stamp) | `snet-stamp-<env>-<N>-<pe\|asp>` | `snet-stamp-dev-1-pe`, `snet-stamp-dev-1-asp` |
 | NSG (fixed) | `nsg-core-<scope>` | `nsg-core-apim`, `nsg-core-runner` |
@@ -456,7 +459,7 @@ NSG names are derived from the VNet name via `replace(vnet_name, "vnet-", "nsg-"
 
 ### VNet Module Integration
 
-The `modules/vnet` module accepts a list of subnet objects. Stamp subnets are generated dynamically by the root config using `concat()` over `flatten([ for stamp_key, stamp in var.stamps : [...] ])` and the fixed subnet list. The NAT Gateway ID is passed into the `snet-runner` subnet definition.
+The `modules/vnet` module accepts a list of subnet objects. Stamp subnets are generated dynamically by the root config using `concat()` over `flatten([ for stamp_key, stamp in var.stamps : [...] ])` and the fixed subnet list. The NAT Gateway ID is passed into **all** subnet definitions (not just the runner), providing consistent outbound routing through the single shared NAT Gateway.
 
 ### Multi-Stamp NSG Rules
 
