@@ -33,6 +33,11 @@ output "websites_zone_id" {
   description = "Zone ID for Function App / Web App private endpoints."
 }
 
+output "apim_zone_id" {
+  value       = azurerm_private_dns_zone.apim.id
+  description = "Zone ID for API Management (azure-api.net) internal VNet DNS resolution."
+}
+
 output "all_zone_ids" {
   value = [
     azurerm_private_dns_zone.key_vault.id,
@@ -42,6 +47,7 @@ output "all_zone_ids" {
     azurerm_private_dns_zone.queue_storage.id,
     azurerm_private_dns_zone.acr.id,
     azurerm_private_dns_zone.websites.id,
+    azurerm_private_dns_zone.apim.id,
   ]
   description = "All Private DNS Zone IDs — convenience list for bulk VNet linking."
 }

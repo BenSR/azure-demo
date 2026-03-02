@@ -60,8 +60,9 @@ output "private_dns_zone_ids" {
     websites_zone_id      = module.private_dns.websites_zone_id
     key_vault_zone_id     = module.private_dns.key_vault_zone_id
     acr_zone_id           = module.private_dns.acr_zone_id
+    apim_zone_id          = module.private_dns.apim_zone_id
   }
-  description = "All Private DNS Zone IDs. Consumed by env/ for KV, stamp storage, and Function App private endpoints."
+  description = "All Private DNS Zone IDs. Consumed by env/ for KV, stamp storage, Function App, and APIM private endpoints."
 }
 
 # ─── Certificates (sensitive — stored in Terraform state) ─────────────────────
