@@ -37,7 +37,7 @@ resource "tls_locally_signed_cert" "apim_gw" {
   ]
 }
 
-data "pkcs12_from_pem" "apim_gw" {
+resource "pkcs12_from_pem" "apim_gw" {
   password        = ""
   cert_pem        = tls_locally_signed_cert.apim_gw.cert_pem
   private_key_pem = tls_private_key.apim_gw.private_key_pem
@@ -81,7 +81,7 @@ resource "azurerm_api_management" "this" {
   hostname_configuration {
     proxy {
       host_name           = "apim-${local.name_suffix}.azure-api.net"
-      certificate         = data.pkcs12_from_pem.apim_gw.result
+      certificate         = pkcs12_from_pem.apim_gw.result
       default_ssl_binding = true
     }
   }
