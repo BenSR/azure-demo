@@ -460,6 +460,76 @@ catch {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TEST 9: Alert Trigger — Deliberate 500s via trip_server_side_error
+#
+# The func_failures alert fires when requests/failed exceeds the threshold
+# (default 5) within the evaluation window (default 15 min).  We send enough
+# 500-producing requests to guarantee the alert trips.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+$alertIterations       = 8   # comfortably above the default threshold of 5
+$alertSuccessCount     = 0
+$alertFailureDetails   = @()
+
+Write-Host "Sending $alertIterations deliberate 500 requests to trip failure alert..." -ForegroundColor Yellow
+
+for ($i = 1; $i -le $alertIterations; $i++) {
+    try {
+        $echoUrl  = "$BaseUrl/echo"
+        $jsonBody = @{ message = "alert-trigger-$i"; trip_server_side_error = $true } | ConvertTo-Json
+
+        $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+        $webRequest.Method      = "POST"
+        $webRequest.ContentType = "application/json"
+        $webRequest.Timeout     = 30000
+        $webRequest.ClientCertificates.Add($clientCert) | Out-Null
+
+        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+        $stream    = $webRequest.GetRequestStream()
+        $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+        $stream.Close()
+
+        try {
+            $webResponse = $webRequest.GetResponse()
+            $webResponse.Close()
+            # 2xx is unexpected — the flag should have caused a 500
+            $alertFailureDetails += "Iteration $i: Expected 500 but received 2xx"
+        }
+        catch [System.Net.WebException] {
+            $errResponse   = $_.Exception.Response
+            $errStatusCode = [int]$errResponse.StatusCode
+            $errReader     = New-Object System.IO.StreamReader($errResponse.GetResponseStream())
+            $errBody       = $errReader.ReadToEnd() | ConvertFrom-Json
+            $errReader.Close()
+
+            if ($errStatusCode -eq 500 -and $errBody.error.code -eq "DELIBERATE_ERROR") {
+                $alertSuccessCount++
+                Write-Host "  [$i/$alertIterations] HTTP 500 DELIBERATE_ERROR — OK" -ForegroundColor DarkGray
+            }
+            else {
+                $alertFailureDetails += "Iteration $i: HTTP $errStatusCode, code=$($errBody.error.code)"
+            }
+        }
+    }
+    catch {
+        $alertFailureDetails += "Iteration $i: $_"
+    }
+
+    # Brief pause to avoid request coalescing in telemetry pipeline
+    Start-Sleep -Milliseconds 500
+}
+
+$allTripped = ($alertSuccessCount -eq $alertIterations)
+$detail     = if ($allTripped) {
+    "$alertSuccessCount/$alertIterations requests returned 500 DELIBERATE_ERROR — failure alert threshold exceeded"
+} else {
+    "$alertSuccessCount/$alertIterations succeeded. Failures: $($alertFailureDetails -join '; ')"
+}
+
+Write-TestResult -TestName "Alert Trigger — Deliberate 500s ($alertIterations requests)" `
+    -Success $allTripped -Detail $detail
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 

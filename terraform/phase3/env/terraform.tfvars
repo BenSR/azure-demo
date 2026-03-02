@@ -21,7 +21,3 @@ api_operations = [
     url_template = "/message"
   },
 ]
-
-# ─── Alerting ─────────────────────────────────────────────────────────────────
-
-alert_email_receivers = ["me@bensomervillerobertsoutlook.onmicrosoft.com"]

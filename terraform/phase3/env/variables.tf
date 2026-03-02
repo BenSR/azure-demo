@@ -66,8 +66,7 @@ variable "api_operations" {
 
 variable "alert_email_receivers" {
   type        = list(string)
-  default     = []
-  description = "List of e-mail addresses to notify when an alert fires. Can be empty to create a silent action group."
+  description = "List of e-mail addresses to notify when an alert fires. Pass via the ADMIN_EMAIL GitHub secret — never store in tfvars."
 }
 
 variable "alert_5xx_failure_threshold" {
