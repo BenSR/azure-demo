@@ -39,3 +39,9 @@ resource "azurerm_private_dns_zone" "websites" {
   resource_group_name = var.resource_group_name
   tags                = var.tags
 }
+
+resource "azurerm_private_dns_zone" "apim" {
+  name                = "azure-api.net"
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
