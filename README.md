@@ -9,6 +9,10 @@ A fully private, mTLS-secured Azure Function API deployed via Terraform and GitH
 1. [Architecture](#architecture)
 2. [Prerequisites](#prerequisites)
 3. [Setup & Deployment](#setup--deployment)
+   - [Bootstrap](#1-bootstrap-manual-one-time)
+   - [Configure GitHub](#2-configure-github)
+   - [Deploy via Pipelines](#3-deploy-via-pipelines)
+   - [Pipelines](#pipelines)
 4. [OIDC Authentication](#oidc-authentication)
 5. [Teardown](#teardown)
 6. [Assumptions](#assumptions)
@@ -59,19 +63,21 @@ Environments (`dev`, `prod`) are managed via Terraform workspaces. Stamps are re
 | Requirement | Detail |
 |-------------|--------|
 | Azure subscription | Owner or Contributor + User Access Administrator |
-| Azure CLI | v2.55+ (federated credential support) |
-| Terraform | v1.6+ (for `terraform test` support) |
+| Azure CLI | v2.55+ (for bootstrap script only) |
 | GitHub repo | Public, with Actions enabled |
 | `jq` | Used by the bootstrap script |
-| Docker | On the self-hosted runner (auto-installed) |
+
+Terraform, Docker, and all other tooling runs in CI — nothing to install locally beyond the bootstrap dependencies.
 
 ---
 
 ## Setup & Deployment
 
+All infrastructure and application deployment is handled by GitHub Actions pipelines. The only manual steps are the one-time bootstrap and GitHub configuration.
+
 ### 1. Bootstrap (manual, one-time)
 
-The bootstrap script creates the resources that must exist before Terraform runs:
+The bootstrap script creates the resources that must exist before any pipeline can run:
 
 ```bash
 bash scripts/prepare-azure-env.sh \
@@ -103,98 +109,57 @@ Create two GitHub environments:
 - **`dev`** — no approval gates
 - **`prod`** — add required reviewers
 
-### 3. Core Infrastructure (`phase1/core`)
+### 3. Deploy via Pipelines
 
-Deployed once, not workspace-driven. Creates the VNet, ACR, Log Analytics, Private DNS zones, NAT Gateway, certificates, jump box, and self-hosted runner.
+Once bootstrap and GitHub configuration are complete, all deployment is driven by pushing code to branches. There are no manual Terraform commands to run.
 
-```bash
-terraform -chdir=terraform/phase1/core init \
-  -backend-config="resource_group_name=rg-core-deploy" \
-  -backend-config="storage_account_name=<SA_NAME>" \
-  -backend-config="container_name=tfstate" \
-  -backend-config="key=phase1-core.tfstate"
+#### Initial deployment sequence
 
-terraform -chdir=terraform/phase1/core apply
+For a fresh environment, merge changes in this order — each push triggers the relevant pipeline:
+
+| Step | Action | Pipeline triggered | What it deploys |
+|------|--------|--------------------|-----------------|
+| 1 | Merge `terraform/phase1/core/` to `main` | **Infra — Core — Prod Apply** | VNet, ACR, LAW, DNS zones, NAT GW, certs, jump box, self-hosted runner |
+| 2 | Wait for runner to self-register | — | The runner VM registers with GitHub Actions via Custom Script Extension (~2-3 min) |
+| 3 | Merge `terraform/phase1/env/` + `phase2/` + `phase3/` to `dev` | **Infra — Env — Dev Apply** | Phase 1 (APIM, stamps) → Phase 2 (config, secrets, alerts). Phase 3 skipped on dev. |
+| 4 | Merge the same to `main` | **Infra — Env — Prod Apply** | Three gated tiers: Phase 1 → Phase 2 → Phase 3 (App GW). Each requires approval. |
+| 5 | Merge `function_app/` to `dev` | **App — Dev Deploy** | Test → build → push `:dev` to ACR → webhook deploy to dev stamps |
+| 6 | Merge `function_app/` to `main` | **App — Prod Deploy** | Test → build → push `:latest` to ACR → approval gate → webhook deploy to prod stamps |
+
+#### Ongoing changes
+
+After initial deployment, the pipelines are path-scoped — only the affected pipeline runs:
+
+- Change Terraform code → infrastructure pipeline runs
+- Change `function_app/` → application pipeline runs
+- Open a PR → validation pipeline runs (fmt, validate, `terraform test`, pytest)
+
+### Pipelines
+
+Eight GitHub Actions workflows handle the full lifecycle. See [docs/2_CI-CD-Approach.md](docs/2_CI-CD-Approach.md) for the complete design.
+
+| Workflow | Trigger | Runner | Behaviour |
+|----------|---------|--------|-----------|
+| **Infra — Validate** | PR / feature push | GitHub-hosted | fmt, validate, `terraform test` (no Azure creds needed) |
+| **Infra — Core — Dev Plan** | Push to `dev` | GitHub-hosted | Plan only (core has no dev workspace) |
+| **Infra — Core — Prod Apply** | Push to `main` | GitHub-hosted | Plan → approval → apply |
+| **Infra — Env — Dev Apply** | Push to `dev` | Mixed | Phase 1 + Phase 2 auto-apply (Phase 3 skipped) |
+| **Infra — Env — Prod Apply** | Push to `main` | Mixed | 3 sequential gated tiers: Phase 1 → 2 → 3 |
+| **App — PR Validate** | PR to `dev`/`main` | Mixed | pytest + trial Docker build (image discarded) |
+| **App — Dev Deploy** | Push to `dev` | Mixed | Test → build → push `:dev` → webhook deploy |
+| **App — Prod Deploy** | Push to `main` | Mixed | Test → build → push `:latest` → approval → webhook deploy |
+
+#### Branch model
+
+```
+feature/xyz ──PR──► dev ──PR──► main
+                     │             │
+                  auto-deploy    gated (approval required)
 ```
 
-> **Note:** The self-hosted runner VM registers itself with GitHub Actions automatically via Custom Script Extension. Allow a few minutes after apply for registration to complete.
+#### Runner selection
 
-### 4. Environment Infrastructure (`phase1/env`)
-
-Workspace-driven — deploys APIM, Entra ID app registrations, and workload stamps per environment.
-
-```bash
-terraform -chdir=terraform/phase1/env init \
-  -backend-config="resource_group_name=rg-core-deploy" \
-  -backend-config="storage_account_name=<SA_NAME>" \
-  -backend-config="container_name=tfstate" \
-  -backend-config="key=phase1-env.tfstate"
-
-terraform -chdir=terraform/phase1/env workspace select -or-create dev
-terraform -chdir=terraform/phase1/env apply \
-  -var-file=terraform.tfvars -var-file=dev.tfvars
-```
-
-Repeat with `prod` workspace and `prod.tfvars` for production.
-
-### 5. Configuration, Secrets & Alerts (`phase2/env`)
-
-Workspace-driven. **Must run from the self-hosted runner** — it writes to private Key Vaults and configures private APIM endpoints.
-
-```bash
-terraform -chdir=terraform/phase2/env init \
-  -backend-config="resource_group_name=rg-core-deploy" \
-  -backend-config="storage_account_name=<SA_NAME>" \
-  -backend-config="container_name=tfstate" \
-  -backend-config="key=phase2-env.tfstate"
-
-terraform -chdir=terraform/phase2/env workspace select dev
-terraform -chdir=terraform/phase2/env apply \
-  -var-file=terraform.tfvars -var-file=dev.tfvars
-```
-
-This deploys: APIM backends/API/policies, Key Vault secrets (CA cert, client cert, webhook URLs), alert rules, and availability tests.
-
-### 6. Application Gateway (`phase3`)
-
-Deployed once, not workspace-driven. Reads remote state from all environments to configure per-env URL path routing.
-
-```bash
-terraform -chdir=terraform/phase3 init \
-  -backend-config="resource_group_name=rg-core-deploy" \
-  -backend-config="storage_account_name=<SA_NAME>" \
-  -backend-config="container_name=tfstate" \
-  -backend-config="key=phase3.tfstate"
-
-terraform -chdir=terraform/phase3 apply -var-file=terraform.tfvars
-```
-
-### 7. Application Deployment
-
-The application is a containerised Python Azure Function. The CI/CD pipeline builds, pushes to ACR, and deploys via Kudu webhook — but for manual deployment:
-
-```bash
-# Build and push (from VNet runner or machine with ACR access)
-az acr login --name <acr_name>
-docker build -t <acr_name>.azurecr.io/wkld-api:dev function_app/
-docker push <acr_name>.azurecr.io/wkld-api:dev
-
-# Trigger deployment via webhook (URL stored in each stamp's Key Vault)
-curl -X POST "<webhook_url>"
-```
-
-### CI/CD Pipelines
-
-Eight GitHub Actions workflows handle the full lifecycle. See [docs/2_CI-CD-Approach.md](docs/2_CI-CD-Approach.md) for the complete pipeline design.
-
-| Workflow | Trigger | Runner |
-|----------|---------|--------|
-| Validate (fmt, validate, test) | PR / push | GitHub-hosted |
-| Core infra (plan/apply) | Changes to `phase1/core/` | GitHub-hosted |
-| Env infra (3 tiers sequentially) | Changes to `phase1/env/`, `phase2/`, `phase3/` | Mixed |
-| App build + deploy | Changes to `function_app/` | Mixed |
-
-Branch model: `dev` auto-deploys, `main` is gated with approval.
+Jobs that only talk to the Azure Resource Manager API (plan/apply for Phase 1, validation) run on **GitHub-hosted** runners. Jobs that need VNet access (Phase 2+3 apply, Docker build+push, webhook deploy) run on the **self-hosted** runner inside the VNet.
 
 ---
 
@@ -232,54 +197,58 @@ GitHub Actions authenticates to Azure using OpenID Connect — no long-lived sec
 
 ## Teardown
 
-### Automated (reverse order)
+Teardown is not yet pipelined — it requires running `terraform destroy` in reverse phase order. Phase 2 and Phase 3 destroys must run from the self-hosted runner (private endpoint access required), so destroy core last.
 
-Destroy in reverse deployment order. Phase 2 and Phase 3 must be destroyed from the self-hosted runner (private endpoint access required).
+### Step 1 — Destroy via the self-hosted runner
+
+SSH into the runner VM (or use the jump box to reach it) and run:
 
 ```bash
-# 1. Application Gateway
+# Application Gateway (phase 3)
 terraform -chdir=terraform/phase3 destroy -var-file=terraform.tfvars
 
-# 2. Config, secrets, alerts (each workspace)
-terraform -chdir=terraform/phase2/env workspace select prod
-terraform -chdir=terraform/phase2/env destroy \
-  -var-file=terraform.tfvars -var-file=prod.tfvars
+# Config, secrets, alerts — each workspace (phase 2)
+for env in prod dev; do
+  terraform -chdir=terraform/phase2/env workspace select "$env"
+  terraform -chdir=terraform/phase2/env destroy \
+    -var-file=terraform.tfvars -var-file="${env}.tfvars"
+done
+```
 
-terraform -chdir=terraform/phase2/env workspace select dev
-terraform -chdir=terraform/phase2/env destroy \
-  -var-file=terraform.tfvars -var-file=dev.tfvars
+### Step 2 — Destroy environment and core infrastructure
 
-# 3. Environment infrastructure (each workspace)
-terraform -chdir=terraform/phase1/env workspace select prod
-terraform -chdir=terraform/phase1/env destroy \
-  -var-file=terraform.tfvars -var-file=prod.tfvars
+These only need ARM API access, so they can run from any machine with Azure CLI auth:
 
-terraform -chdir=terraform/phase1/env workspace select dev
-terraform -chdir=terraform/phase1/env destroy \
-  -var-file=terraform.tfvars -var-file=dev.tfvars
+```bash
+# Environment infrastructure — each workspace (phase 1 env)
+for env in prod dev; do
+  terraform -chdir=terraform/phase1/env workspace select "$env"
+  terraform -chdir=terraform/phase1/env destroy \
+    -var-file=terraform.tfvars -var-file="${env}.tfvars"
+done
 
-# 4. Core infrastructure
+# Core infrastructure (phase 1 core) — destroy last
 terraform -chdir=terraform/phase1/core destroy
 ```
 
-### Manual cleanup (after Terraform destroy)
+### Step 3 — Manual cleanup
 
-These resources are created outside Terraform and must be removed manually:
+These resources exist outside Terraform and must be removed manually:
 
 | Resource | How to remove |
 |----------|---------------|
 | `rg-core-deploy` (state storage) | `az group delete --name rg-core-deploy` |
 | App Registration + Service Principal | `az ad app delete --id <APP_ID>` |
 | Entra ID role assignments | Removed automatically when the SP is deleted |
-| GitHub Actions secrets | Remove from Repository → Settings → Secrets |
-| GitHub environments (`dev`, `prod`) | Remove from Repository → Settings → Environments |
-| Self-hosted runner registration | Auto-deregisters when VM is destroyed; or manually in GitHub Settings → Actions → Runners |
+| GitHub Actions secrets | Repository → Settings → Secrets |
+| GitHub environments (`dev`, `prod`) | Repository → Settings → Environments |
+| Self-hosted runner registration | Auto-deregisters when VM is destroyed; or manually via GitHub Settings → Actions → Runners |
 
 ### Ordering constraints
 
-- Phase 2 resources (APIM config, KV secrets) must be destroyed before Phase 1 (which owns the APIM and KV instances).
-- Phase 3 (App GW) should be destroyed before Phase 1 core (which owns the VNet/subnets).
-- The self-hosted runner (Phase 1 core) must remain available until Phase 2 and Phase 3 are destroyed.
+- **Phase 2 before Phase 1** — Phase 2 resources (APIM config, KV secrets) must be destroyed before Phase 1, which owns the APIM and Key Vault instances they depend on.
+- **Phase 3 before Phase 1 core** — The App GW subnet and NSG rules reference the core VNet.
+- **Core last** — The self-hosted runner lives in Phase 1 core and must remain available until Phase 2 and Phase 3 are destroyed.
 
 ---
 
