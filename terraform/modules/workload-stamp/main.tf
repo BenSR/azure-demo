@@ -107,6 +107,9 @@ resource "azurerm_linux_function_app" "this" {
       FUNCTIONS_EXTENSION_VERSION                = "~4"
       # Disable the built-in App Service storage mount; blobs are accessed via PE.
       WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
+      # Pull container images through VNet integration so the Function App
+      # reaches the ACR private endpoint (ACR has no public access).
+      WEBSITE_PULL_IMAGE_OVER_VNET = "true"
     },
     each.value.app_settings
   )
