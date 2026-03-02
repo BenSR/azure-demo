@@ -33,11 +33,11 @@ Two runner types are used. GitHub-hosted runners handle everything that only nee
 | Lint / validate / test | GitHub-hosted (`ubuntu-latest`) | No Azure network access needed |
 | `phase1/core` plan + apply | GitHub-hosted | Terraform ARM API only (no private endpoints) |
 | `phase1/env` plan + apply | GitHub-hosted | Terraform ARM API only; KV data plane not accessed |
-| `phase3` plan + apply | **Self-hosted** (`[self-hosted, linux]`) | Must reach private KV and APIM endpoints inside VNet |
+| `phase3/env` plan + apply | **Self-hosted** (`[self-hosted, linux]`) | Must reach private KV and APIM endpoints inside VNet |
 | Docker build + push to ACR | **Self-hosted** | ACR has `public_network_access_enabled = false` |
 | Webhook deploy | **Self-hosted** | Kudu SCM endpoint only reachable from inside VNet |
 
-The runner VM is registered with GitHub manually after Terraform provisioning (see [Infrastructure Implementation Planning](Infrastructure-Implementation-Planning)). It uses the label set `self-hosted,linux` by convention; update the workflow `runs-on` labels if you configure different labels during registration.
+The runner VM is registered with GitHub automatically during provisioning via a Custom Script Extension that runs `setup-runner.sh`. The script installs Docker, Azure CLI, Node.js, and the GitHub Actions runner binary, then registers and starts the runner as a systemd service using a PAT-based registration token. It uses the label set `self-hosted,linux` by convention; update the workflow `runs-on` labels if you configure different labels.
 
 ---
 
@@ -68,9 +68,7 @@ Produces a plan against the live core state. No apply — core has no dev worksp
 ```
 Merge to dev
   → (public runner)
-    → terraform fmt -check -recursive
-    → tflint --recursive
-    → terraform -chdir=phase1/core plan -out=/tmp/tfplan-core
+    → terraform -chdir=phase1/core plan
     → Plan summary posted to Actions job summary
 ```
 
@@ -101,9 +99,9 @@ Merge to main
 
 ## Pipeline 2: Workload Infrastructure
 
-_Triggered on changes to `terraform/phase1/env/` or `terraform/phase3/`_
+_Triggered on changes to `terraform/phase1/env/` or `terraform/phase3/env/`_
 
-Workspace-driven (`dev` / `prod`). `phase1/env` and `phase3` are deployed sequentially — phase3 reads phase1/env remote state, so it cannot run until phase1/env apply completes. Dev auto-applies; prod is gated.
+Workspace-driven (`dev` / `prod`). `phase1/env` and `phase3/env` are deployed sequentially — phase3/env reads phase1/env remote state, so it cannot run until phase1/env apply completes. Dev auto-applies; prod is gated.
 
 ### Feature Branch — Lint & Validate
 
@@ -112,11 +110,12 @@ Push to any branch
   → (public runner)
     → terraform fmt -check -recursive
     → tflint --recursive
+    → terraform validate   # phase1/core
     → terraform validate   # phase1/env
-    → terraform validate   # phase3
+    → terraform validate   # phase3/env
 ```
 
-Validates all workspace-driven roots. A change to the `workload-stamp` module is caught against both consumers.
+Validates all roots. A change to the `workload-stamp` module is caught against both consumers.
 
 ### Merge to `dev` — Plan + Auto-Apply
 
@@ -129,51 +128,56 @@ Merge to dev
   │     → terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
   │     → terraform apply tfplan
   │
-  └── phase3 (self-hosted runner — runs after phase1/env apply succeeds)
+  └── phase3/env (self-hosted runner — runs after phase1/env apply succeeds)
         → terraform workspace select dev
         → terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
         → terraform apply tfplan
 ```
 
-If phase1/env apply fails, phase3 is skipped.
+If phase1/env apply fails, phase3/env is skipped.
 
 ### Merge to `main` — Plan, Store, Approve, Apply
 
-Prod changes require a reviewer to inspect the plan before anything is applied. Plan files are uploaded to blob storage so the apply step uses the exact plan that was reviewed — no drift risk from state changes between plan and apply.
+Prod changes require a reviewer to inspect the plan before anything is applied. There are **two separate approval gates** — one after the phase1/env plan (infra) and one after the phase3/env plan (APIM config). Plan files are uploaded to blob storage so the apply step uses the exact plan that was reviewed — no drift risk from state changes between plan and apply.
 
 ```
 Merge to main
   │
-  ├── PLAN (GitHub-hosted for phase1/env, self-hosted for phase3)
+  ├── PLAN INFRA (GitHub-hosted)
   │     → terraform workspace select prod
   │     → terraform -chdir=phase1/env plan \
   │           -var-file=terraform.tfvars -var-file=prod.tfvars \
   │           -out=/tmp/tfplan-env-prod
   │     → az storage blob upload \
   │           --container-name tfplans \
-  │           --name "env-prod-${GITHUB_RUN_ID}.tfplan" \
+  │           --name "infra-prod-${GITHUB_RUN_ID}.tfplan" \
   │           --file /tmp/tfplan-env-prod
   │
-  │     → terraform -chdir=phase3 plan \
+  ├── APPROVAL — INFRA (GitHub Actions `prod` environment)
+  │     → Workflow pauses — reviewer inspects phase1/env plan
+  │     → Approves or rejects
+  │
+  ├── APPLY INFRA (GitHub-hosted)
+  │     → az storage blob download "infra-prod-${GITHUB_RUN_ID}.tfplan"
+  │     → terraform -chdir=phase1/env apply tfplan-env-prod
+  │
+  ├── PLAN APIM (self-hosted runner — needs VNet access to KV and APIM)
+  │     → terraform workspace select prod
+  │     → terraform -chdir=phase3/env plan \
   │           -var-file=terraform.tfvars -var-file=prod.tfvars \
   │           -out=/tmp/tfplan-phase3-prod
   │     → az storage blob upload \
   │           --container-name tfplans \
-  │           --name "phase3-prod-${GITHUB_RUN_ID}.tfplan" \
+  │           --name "apim-prod-${GITHUB_RUN_ID}.tfplan" \
   │           --file /tmp/tfplan-phase3-prod
   │
-  │     → Plan summaries posted to Actions job summary
-  │
-  ├── APPROVAL (GitHub Actions `prod` environment)
-  │     → Workflow pauses — reviewer inspects plan
+  ├── APPROVAL — APIM (GitHub Actions `prod` environment)
+  │     → Workflow pauses — reviewer inspects phase3/env plan
   │     → Approves or rejects
   │
-  └── APPLY (GitHub-hosted for phase1/env, self-hosted for phase3)
-        → az storage blob download "env-prod-${GITHUB_RUN_ID}.tfplan"
-        → terraform -chdir=phase1/env apply tfplan-env-prod
-        → (wait for phase1/env to complete)
-        → az storage blob download "phase3-prod-${GITHUB_RUN_ID}.tfplan"
-        → terraform -chdir=phase3 apply tfplan-phase3-prod
+  └── APPLY APIM (self-hosted runner)
+        → az storage blob download "apim-prod-${GITHUB_RUN_ID}.tfplan"
+        → terraform -chdir=phase3/env apply tfplan-phase3-prod
 ```
 
 Plans are stored in the `tfplans` container of the state storage account (`rg-core-deploy`). Blobs are keyed by `GITHUB_RUN_ID` so each run has its own plan pair. A retention policy on the container cleans up blobs older than 30 days.
@@ -184,17 +188,17 @@ The approval gate is implemented as a [GitHub Actions environment](https://docs.
 
 ## Pipeline 3: Application Code
 
-_Triggered on changes to application source (everything outside `terraform/`)_
+_Triggered on changes to `function_app/` and app workflow files_
 
 ### Feature Branch — Test & Build
 
 Catches failures on every branch before anything reaches dev or prod.
 
 ```
-Push to any branch
+Pull request to dev or main
   ├── (GitHub-hosted) Test
   │     → pip install -r requirements.txt
-  │     → pytest tests/ -v --cov=core --cov=functions
+  │     → pytest tests/ -v --cov
   │     → (fail if coverage < 90%)
   │
   └── (self-hosted) Build
@@ -215,11 +219,12 @@ Merge to dev
       → az acr login --name acrcore
       → docker build -t acrcore.azurecr.io/wkld-api:dev .
       → docker push acrcore.azurecr.io/wkld-api:dev
-      → WEBHOOK=$(az keyvault secret show \
-            --vault-name kv-wkld-1-dev \
-            --name deploy-webhook-url \
-            --query value -o tsv)
-      → curl -s -X POST "$WEBHOOK"
+      → for each stamp (1, 2):
+          WEBHOOK=$(az keyvault secret show \
+                --vault-name kv-wkld-<N>-dev \
+                --name deploy-webhook-url \
+                --query value -o tsv)
+          curl -s -X POST "$WEBHOOK"
 ```
 
 ### Merge to `main` — Test, Build, Push, Approve, Deploy
@@ -243,11 +248,12 @@ Merge to main
   │     → Approves or rejects
   │
   └── (self-hosted) Deploy
-        → WEBHOOK=$(az keyvault secret show \
-              --vault-name kv-wkld-1-prod \
-              --name deploy-webhook-url \
-              --query value -o tsv)
-        → curl -s -X POST "$WEBHOOK"
+        → for each prod stamp (1):
+            WEBHOOK=$(az keyvault secret show \
+                  --vault-name kv-wkld-<N>-prod \
+                  --name deploy-webhook-url \
+                  --query value -o tsv)
+            curl -s -X POST "$WEBHOOK"
 ```
 
 ### Webhook Mechanism

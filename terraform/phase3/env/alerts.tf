@@ -59,17 +59,109 @@ resource "azurerm_monitor_metric_alert" "func_failures" {
   tags = local.tags
 }
 
+# ─── Scheduled Query Alert — HTTP 5xx Responses ───────────────────────────────
+# Queries the Application Insights requests table directly so the alert fires
+# on any HTTP 5xx response, regardless of whether the Functions runtime also
+# raises an exception.  This is more reliable than the metric-based
+# requests/failed alert for deliberately-returned 500s (no exception raised).
+#
+# Scope: Application Insights resource (workspace-based).  The KQL query runs
+# in the context of the App Insights resource and has access to the requests,
+# traces, exceptions, and dependencies tables.
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "func_5xx_query" {
+  for_each = local.stamps_map
+
+  name                = "sqr-func-5xx-stamp-${each.key}-${local.environment}"
+  resource_group_name = local.env.resource_group_stamps[each.key]
+  location            = var.location
+
+  description             = "Stamp ${each.key} (${local.environment}): HTTP 5xx response detected in Application Insights requests table"
+  severity                = 2
+  evaluation_frequency    = "PT5M"
+  window_duration         = "PT5M"
+  auto_mitigation_enabled = true
+
+  scopes = [local.env.app_insights_ids[each.key]]
+
+  criteria {
+    query                   = "requests | where resultCode startswith \"5\""
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.wkld.id]
+  }
+
+  tags = local.tags
+}
+
+# ─── App Insights — Standard Web Test (Availability Probe) ─────────────────────
+# Synthetic availability test that probes the Function App health endpoint via
+# the APIM gateway from multiple Azure-managed geo-locations.  Populates the
+# availabilityResults metric consumed by the func_availability alert below.
+#
+# One web test per stamp, scoped to that stamp's Application Insights instance.
+# The primary stamp is used as the backend for the health endpoint in the APIM
+# policy (health-check operation routes to stamp-index 0 — see apim-config.tf).
+# Each stamp still gets its own web test to confirm App Insights metric linkage.
+#
+# NOTE (private architecture): APIM is deployed in Internal VNet mode and has
+# no public endpoint.  The standard web test probes originate from Microsoft-
+# managed public IPs that cannot reach the APIM gateway.  In this fully private
+# deployment, the web test will report failures (100% unavailability from
+# external probes) — which is the expected and correct behaviour: it confirms
+# that the API is NOT publicly accessible.
+#
+# For production environments that require in-VNet synthetic monitoring:
+#   • Deploy Application Gateway with a public IP in front of APIM, OR
+#   • Use TrackAvailability SDK from a VNet-hosted Function to report custom
+#     availability telemetry from inside the VNet.
+#
+# The web test is created but disabled by default (var.web_test_enabled).
+# Enable it when a public path to the APIM gateway exists.
+
+resource "azurerm_application_insights_standard_web_test" "health" {
+  for_each = local.stamps_map
+
+  name                    = "webtest-health-stamp-${each.key}-${local.environment}"
+  resource_group_name     = local.env.resource_group_stamps[each.key]
+  location                = var.location
+  application_insights_id = local.env.app_insights_ids[each.key]
+  frequency               = var.web_test_frequency_seconds
+  timeout                 = var.web_test_timeout_seconds
+  enabled                 = var.web_test_enabled
+
+  geo_locations = var.web_test_geo_locations
+
+  request {
+    url = "${local.env.apim_gateway_url}/${azurerm_api_management_api.wkld.path}/health"
+  }
+
+  validation_rules {
+    expected_status_code = 200
+
+    content {
+      content_match      = "healthy"
+      pass_if_text_found = true
+    }
+  }
+
+  tags = local.tags
+}
+
 # ─── Metric Alert — Function App Availability ─────────────────────────────────
 # Triggers when the availability percentage reported by Application Insights
 # drops below the configured threshold.  This metric is populated by the
-# Function App runtime telemetry (health-check requests) and by any synthetic
-# monitor requests that hit the endpoint.
-#
-# NOTE: For a fully private deployment (APIM in Internal mode, Function Apps
-# behind Private Endpoints) the availability metric is driven by internal
-# traffic only.  Consider adding a custom synthetic heartbeat triggered by
-# the VNet-injected runner or an Azure Private Test to populate this metric
-# with proactive probe data.
+# standard web test above (when enabled) and by any other availability
+# telemetry reported via the TrackAvailability SDK.
 
 resource "azurerm_monitor_metric_alert" "func_availability" {
   for_each = local.stamps_map
