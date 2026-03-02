@@ -13,7 +13,9 @@
       "Bash(pip install -q azure-monitor-opentelemetry)",
       "Bash(terraform fmt -recursive terraform/)",
       "Bash(terraform fmt -check -recursive terraform/)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(ls -la /workspaces/azure-demo/terraform/phase2/env/*.tfvars)",
+      "Bash(terraform fmt terraform/phase3/)"
     ]
   }
 }

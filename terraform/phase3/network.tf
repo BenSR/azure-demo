@@ -1,10 +1,16 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Networking — App Gateway subnet, NSG, cross-cutting NSG rules
+# Networking — App Gateway subnet, Private Link NAT subnet, NSG, cross-cutting
+# NSG rules
 #
-# The App Gateway subnet is created directly in the core VNet (outside the
-# modules/vnet module) to avoid modifying phase1/core.  This is safe because
-# the VNet module uses for_each over its own subnet list and will not attempt
-# to manage subnets it does not know about.
+# The App Gateway subnet and its companion Private Link NAT subnet are created
+# directly in the core VNet (outside the modules/vnet module) to avoid
+# modifying phase1/core.  This is safe because the VNet module uses for_each
+# over its own subnet list and will not attempt to manage subnets it does not
+# know about.
+#
+# The App GW is not Internet-facing.  All client traffic arrives via a Private
+# Endpoint (in snet-shared-pe) → Private Link (snet-appgw-pl) → App GW.
+# The NSG only permits HTTPS from the PL subnet, GatewayManager, and the LB.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─── VNet data source ─────────────────────────────────────────────────────────
@@ -23,6 +29,18 @@ resource "azurerm_subnet" "appgw" {
   resource_group_name  = local.core.resource_group_core
   virtual_network_name = data.azurerm_virtual_network.core.name
   address_prefixes     = [var.appgw_subnet_cidr]
+}
+
+# ─── Private Link NAT subnet ───────────────────────────────────────────────
+# Azure requires a separate subnet for Application Gateway Private Link NAT
+# IPs.  This subnet hosts the SNAT addresses through which PE traffic enters
+# the Application Gateway.
+
+resource "azurerm_subnet" "appgw_pl" {
+  name                 = "snet-appgw-pl"
+  resource_group_name  = local.core.resource_group_core
+  virtual_network_name = data.azurerm_virtual_network.core.name
+  address_prefixes     = [var.appgw_pl_subnet_cidr]
 }
 
 # ─── NSG: nsg-core-appgw ─────────────────────────────────────────────────────
@@ -58,15 +76,16 @@ resource "azurerm_network_security_rule" "appgw_in_allow_gateway_manager" {
 }
 
 resource "azurerm_network_security_rule" "appgw_in_allow_https" {
-  # Public HTTPS ingress — clients connect here with mTLS.
-  name                        = "allow-inbound-https"
+  # Private Link ingress — PE traffic is SNATed through the PL subnet and
+  # enters the App GW subnet from there.  No Internet exposure.
+  name                        = "allow-inbound-https-private-link"
   priority                    = 110
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "443"
-  source_address_prefix       = "Internet"
+  source_address_prefix       = var.appgw_pl_subnet_cidr
   destination_address_prefix  = "*"
   resource_group_name         = local.core.resource_group_core
   network_security_group_name = azurerm_network_security_group.appgw.name

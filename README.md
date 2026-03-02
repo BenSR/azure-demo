@@ -1,396 +1,346 @@
 # Azure Cloud Platform Engineering Demo
 
-A fully private, mTLS-secured Azure Function API deployed via Terraform and GitHub Actions CI/CD.
+A fully private, mTLS-secured Azure Function API deployed via Terraform and GitHub Actions.
 
 ---
 
 ## Table of Contents
 
 1. [Architecture](#architecture)
-2. [CI/CD Methodology](#cicd-methodology)
-3. [Prerequisites](#prerequisites)
-4. [Setup & Deployment](#setup--deployment)
-   - [Bootstrap](#1-bootstrap-manual)
-   - [Core Infrastructure](#2-core-infrastructure-phase1core)
-   - [Workload Infrastructure](#3-workload-infrastructure-phase1env--phase3)
-   - [Application Deployment](#4-application-deployment)
-5. [OIDC Authentication](#oidc-authentication)
-6. [Teardown](#teardown)
-7. [Assumptions](#assumptions)
-8. [Estimated Azure Costs](#estimated-azure-costs)
-9. [AI Usage & Critique](#ai-usage--critique)
+2. [Prerequisites](#prerequisites)
+3. [Setup & Deployment](#setup--deployment)
+   - [Bootstrap](#1-bootstrap-manual-one-time)
+   - [Configure GitHub](#2-configure-github)
+   - [Deploy via Pipelines](#3-deploy-via-pipelines)
+   - [Pipelines](#pipelines)
+4. [OIDC Authentication](#oidc-authentication)
+5. [Teardown](#teardown)
+6. [Assumptions](#assumptions)
+7. [Estimated Azure Costs](#estimated-azure-costs)
+8. [AI Usage & Critique](#ai-usage--critique)
 
 ---
 
 ## Architecture
 
-### Design Overview
+### Overview
 
-The solution is structured around four tiers of Azure resource groups, each with a distinct lifecycle and sharing boundary:
+The solution exposes an internal API (Python Azure Function) through APIM with mTLS enforcement, fronted by an Application Gateway for public ingress. All PaaS services are fully private — no public endpoints.
 
-- **Bootstrap (`rg-core-deploy`)** — created manually before any Terraform runs. Holds the remote state storage account and the OIDC service principal used by GitHub Actions. Not managed by Terraform.
-- **Core (`rg-core`)** — shared platform infrastructure deployed once, environment-agnostic. Hosts the VNet, ACR, Log Analytics, NAT Gateway, jump box, and self-hosted runner.
-- **Environment-shared (`rg-wkld-shared-{env}`)** — one per environment (`dev`, `prod`). Contains APIM, which is the single internal entry point for all stamps in that environment.
-- **Stamp (`rg-wkld-stamp-{N}-{env}`)** — one per stamp per environment. Each stamp is a self-contained workload unit: Function App, Storage Account, Key Vault, and Application Insights.
+Infrastructure is organised into four resource group tiers, each with a distinct lifecycle:
 
-**Environments** are managed via Terraform workspaces (`dev`, `prod`). Workspace selection drives which environment-scoped resources are planned and applied — core infrastructure is workspace-independent and deployed once.
+| Tier | Resource group | Contents | Deployed by |
+|------|----------------|----------|-------------|
+| Bootstrap | `rg-core-deploy` | Terraform state storage, OIDC service principal | Manual (bootstrap script) |
+| Core | `rg-core` | VNet, ACR, Log Analytics, NAT GW, DNS zones, VMs | Phase 1 (core) |
+| Env-shared | `rg-wkld-shared-{env}` | APIM (per-environment) | Phase 1 (env) |
+| Stamp | `rg-wkld-stamp-{N}-{env}` | Function App, Storage, Key Vault, App Insights | Phase 1 (env) |
 
-**Stamps** are instances of the workload module within an environment. Multiple stamps can be declared per environment via `.tfvars`, and APIM load-balances across them. This design enables horizontal scaling and, with a full hub-spoke network topology, could support multi-region resilience — each stamp deployed to a different Azure region. Hub-spoke is not implemented here (it is out of scope for this assessment), so all stamps currently share a single VNet.
+Environments (`dev`, `prod`) are managed via Terraform workspaces. Stamps are repeatable workload instances within an environment — APIM load-balances across them.
 
-### Logical Architecture
+### Architecture Diagram
 
-```mermaid
-graph TB
-    subgraph rg_deploy["rg-core-deploy · Pre-Terraform Bootstrap (manual)"]
-        tfstate["Terraform State\nStorage Account"]
-        oidc["OIDC Service Principal\nGitHub Actions auth"]
-    end
+<!-- TODO: Replace with architecture diagram -->
 
-    subgraph rg_core["rg-core · Shared Platform (deployed once, all environments)"]
-        vnet["VNet · vnet-core  10.100.0.0/16\nSubnets · NSGs · NAT Gateway\nPrivate DNS Zones"]
-        acr["Container Registry\n(private endpoint)"]
-        law["Log Analytics Workspace"]
-        vms["Jump Box VM · Self-hosted Runner VM"]
-    end
+> *Placeholder — architecture diagram to be added.*
 
-    subgraph rg_env["rg-wkld-shared-{env} · Per-Environment  (one per Terraform workspace)"]
-        apim["API Management\nInternal VNet mode · mTLS termination\nLoad-balances across stamps"]
-    end
+### Network Diagram
 
-    subgraph rg_stamp["rg-wkld-stamp-{N}-{env} · Per-Stamp Workload  (N stamps × M environments)"]
-        fa["Function App\nContainerised Python · VNet-integrated"]
-        kv["Key Vault\nCerts · Secrets · Private Endpoint"]
-        st["Storage Account\nblob · file · table · queue PEs"]
-        ai["Application Insights · Alerts"]
-    end
+<!-- TODO: Replace with network diagram -->
 
-    rg_deploy -->|"remote state read by all roots"| rg_core
-    rg_core -->|"VNet · ACR · LAW · DNS\nconsumed via remote_state"| rg_env
-    rg_core -->|"Stamp subnet pairs\nallocated per stamp"| rg_stamp
-    rg_env -->|"APIM backend\nper stamp"| rg_stamp
-```
+> *Placeholder — network topology diagram to be added.*
 
-### Components
+### Request Flow
 
-| Component | Resource | Notes |
-|-----------|----------|-------|
-| Networking | VNet `vnet-core`, 6 subnet types, NSGs with deny-all | Single VNet, multi-environment via subnet naming |
-| Ingress | APIM (Developer tier, internal VNet mode) | Only entry point to the Function App |
-| Compute | Azure Function App (Python, Consumption/EP plan) | VNet-integrated, no public access |
-| mTLS | Self-signed CA + client cert via `tls` provider | Stored in Key Vault, enforced at APIM |
-| Secrets | Azure Key Vault (per stamp, private endpoint) | RBAC auth, no public access |
-| Storage | Azure Storage Account (per stamp, private endpoints) | blob, file, table, queue PEs |
-| Registry | Azure Container Registry | Private endpoint, no public access |
-| Observability | Application Insights + Log Analytics Workspace | Diagnostic settings on all resources |
-| Alerting | Azure Monitor alert rule(s) | e.g. error rate / latency |
-| CI/CD | GitHub Actions (3 pipelines) | OIDC auth, self-hosted runner for private plane |
-| Jump Box | Windows 11 VM (`vm-jumpbox-core`) | Entra ID auth (AADLoginForWindows), public RDP |
-| Runner | Ubuntu 22.04 VM (`vm-runner-core`) | Self-hosted GitHub Actions runner, NAT GW egress |
+<!-- TODO: Replace with request flow diagram -->
 
-### Terraform Structure
-
-```
-terraform/
-├── phase1/
-│   ├── core/        # Shared infra: VNet, ACR, Log Analytics, NAT GW, jump box, runner VM
-│   └── env/         # Per-environment workload: Function App, Storage, Key Vault, APIM
-└── phase3/          # Data-plane config: certificates, secrets, APIM policies (self-hosted runner)
-modules/
-├── vnet/
-├── private-dns/
-├── workload-stamp/
-└── workload-stamp-subnet/
-```
-
----
-
-## CI/CD Methodology
-
-Three GitHub Actions pipelines cover infrastructure and application delivery, authenticated to Azure via OIDC throughout. The deployment is split into three phases that must run in order — the separation is not arbitrary; it is driven by a network bootstrapping constraint.
-
-### Why Three Phases?
-
-Phase 1 creates the self-hosted runner VM (`vm-runner-core`) and injects it into `vnet-core`. Phase 3 must run *on* that runner because it performs data-plane operations against private endpoints — Key Vault secret writes, APIM configuration — that are unreachable from GitHub-hosted runners outside the VNet. You cannot run Phase 3 before Phase 1 has provisioned the runner it depends on.
-
-Terraform also cannot plan Phase 3 resources from outside the VNet: it calls `ListKeys` and lists blob containers on locked-down Storage Accounts during `terraform plan`, which returns 403 from a public IP. Splitting the phases keeps each root's plan/apply runnable on the appropriate runner type.
-
-```
-Phase 1 (GitHub-hosted runner)
-  → Provisions VNet, self-hosted runner VM, core infra, workload infra
-
-Phase 2 (Manual)
-  → Runner VM registered with GitHub Actions
-  → Any other one-time steps not automatable pre-runner
-
-Phase 3 (Self-hosted runner — inside VNet)
-  → Writes certs/secrets to Key Vault
-  → Configures APIM backends and mTLS policy
-  → Deploys Monitor alerts and availability tests
-```
-
-### Phase 1 — Infrastructure (`phase1/core` + `phase1/env`)
-
-Runs on GitHub-hosted runners. Only requires Azure ARM API access (Terraform control plane) — no private endpoint connectivity needed.
-
-| Sub-phase | Root | What it deploys | Workspace |
-|-----------|------|-----------------|-----------|
-| 1a — Core | `terraform/phase1/core/` | VNet, ACR, Log Analytics, NAT Gateway, Private DNS, jump box, runner VM | None (deployed once) |
-| 1b — Workload | `terraform/phase1/env/` | APIM, Function App, Storage Account, Key Vault, App Insights, Private Endpoints | `dev` / `prod` |
-
-`phase1/core` is workspace-independent and deployed once shared across all environments. `phase1/env` is workspace-driven — `terraform workspace select dev` targets the dev environment, `prod` targets production. Core outputs (VNet, ACR, Log Analytics IDs) are consumed by `phase1/env` via `terraform_remote_state`.
-
-### Phase 2 — Manual Steps
-
-After Phase 1 completes, the following one-time manual step is required before Phase 3 can run:
-
-1. **Create a GitHub PAT** with `repo` scope and add it as the repository secret `RUNNER_PAT`. This token is used by the runner VM to register itself with GitHub Actions.
-
-This phase exists as a named gate so that future manual requirements have a clear home and the overall sequence remains explicit.
-
-### Phase 3 — Data-Plane Operations (`phase3`)
-
-Runs on the self-hosted runner inside `vnet-core`. Reads remote state from both `phase1/core` and `phase1/env` to obtain resource IDs and outputs.
-
-| File | Purpose |
-|------|---------|
-| `secrets.tf` | Writes CA certificate and client certificate into each stamp's Key Vault (data-plane write, requires VNet access) |
-| `apim-config.tf` | Creates APIM backends (one per stamp), API definition, operations, and mTLS client-cert validation policy |
-| `alerts.tf` | Azure Monitor metric alerts, App Insights availability tests, Action Group |
-
-### Branch Model & Environment Promotion
-
-```
-feature/xyz ──PR──► dev ──PR──► main
-                     │              │
-               workspace: dev  workspace: prod
-               auto-deploy     gated (approval required)
-```
-
-Changes flow through `dev` first (auto-applied on merge) then are promoted to `prod` via a deliberate PR from `dev` to `main`. The `main` branch triggers plan → human approval → apply for both infrastructure and application pipelines. Plan files are uploaded to the `tfplans` blob container between the plan and apply steps so the apply executes the exact plan the reviewer inspected.
+> *Placeholder — request flow diagram showing: Client → App GW (mTLS) → APIM (internal) → Function App PE.*
 
 ---
 
 ## Prerequisites
 
-- Azure subscription with Owner access
-- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.x
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) >= 2.x
-- [GitHub CLI](https://cli.github.com/) (optional, for secret configuration)
-- A public GitHub repository forked from this repo
+| Requirement | Detail |
+|-------------|--------|
+| Azure subscription | Owner or Contributor + User Access Administrator |
+| Azure CLI | v2.55+ (for bootstrap script only) |
+| GitHub repo | Public, with Actions enabled |
+| `jq` | Used by the bootstrap script |
+
+Terraform, Docker, and all other tooling runs in CI — nothing to install locally beyond the bootstrap dependencies.
 
 ---
 
 ## Setup & Deployment
 
-### 1. Bootstrap (Manual)
+All infrastructure and application deployment is handled by GitHub Actions pipelines. The only manual steps are the one-time bootstrap and GitHub configuration.
 
-> Run once before any Terraform is applied. Creates the pre-Terraform resources that Terraform itself depends on.
+### 1. Bootstrap (manual, one-time)
+
+The bootstrap script creates the resources that must exist before any pipeline can run:
 
 ```bash
-./scripts/prepare-azure-env.sh
+bash scripts/prepare-azure-env.sh \
+  --repo <owner/repo> \
+  --location northeurope
 ```
 
-This script:
-- Creates resource group `rg-core-deploy`
-- Creates Azure Storage Account for Terraform remote state (containers: `tfstate`, `tfplans`)
-- Creates a Service Principal with federated OIDC credentials for GitHub Actions
-- Assigns Owner on the subscription and Storage Blob Data Contributor on the state SA
+This creates:
+- `rg-core-deploy` resource group
+- Terraform state storage account (+ `tfstate` and `tfplans` containers)
+- App Registration + Service Principal with OIDC federated credentials
+- Role assignments: Owner (subscription), Storage Blob Data Contributor (state SA), Application Developer + Directory Readers (Entra ID), Microsoft Graph `Application.ReadWrite.All`
 
-After running, set the following GitHub repository secrets:
+The script prints the GitHub secrets and environments to configure (see [OIDC Authentication](#oidc-authentication)).
+
+### 2. Configure GitHub
+
+Add the following as GitHub Actions repository secrets:
 
 | Secret | Value |
 |--------|-------|
-| `ARM_CLIENT_ID` | Service principal client ID |
-| `ARM_TENANT_ID` | Azure tenant ID |
-| `ARM_SUBSCRIPTION_ID` | Azure subscription ID |
+| `ARM_CLIENT_ID` | App Registration client ID (from bootstrap output) |
+| `ARM_TENANT_ID` | Entra ID tenant ID |
+| `ARM_SUBSCRIPTION_ID` | Target subscription ID |
 | `TF_STATE_STORAGE_ACCOUNT` | State storage account name |
-| `RUNNER_PAT` | GitHub Personal Access Token with `repo` scope, used by the runner VM to register itself with GitHub Actions |
+| `RUNNER_MANAGEMENT_PAT` | GitHub PAT with `manage_runners:repo` scope |
 
-### 2. Core Infrastructure (`phase1/core`)
+Create two GitHub environments:
+- **`dev`** — no approval gates
+- **`prod`** — add required reviewers
 
-> Deploys the shared VNet, ACR, Log Analytics, NAT Gateway, jump box VM, and runner VM.
+### 3. Deploy via Pipelines
 
-Either trigger via GitHub Actions (push/merge to `main`) or run locally:
+Once bootstrap and GitHub configuration are complete, all deployment is driven by pushing code to branches. There are no manual Terraform commands to run.
 
-```bash
-cd terraform/phase1/core
-terraform init
-terraform plan -out=tfplan
-terraform apply tfplan
+#### Initial deployment sequence
+
+For a fresh environment, merge changes in this order — each push triggers the relevant pipeline:
+
+| Step | Action | Pipeline triggered | What it deploys |
+|------|--------|--------------------|-----------------|
+| 1 | Merge `terraform/phase1/core/` to `main` | **Infra — Core — Prod Apply** | VNet, ACR, LAW, DNS zones, NAT GW, certs, jump box, self-hosted runner |
+| 2 | Wait for runner to self-register | — | The runner VM registers with GitHub Actions via Custom Script Extension (~2-3 min) |
+| 3 | Merge `terraform/phase1/env/` + `phase2/` + `phase3/` to `dev` | **Infra — Env — Dev Apply** | Phase 1 (APIM, stamps) → Phase 2 (config, secrets, alerts). Phase 3 skipped on dev. |
+| 4 | Merge the same to `main` | **Infra — Env — Prod Apply** | Three gated tiers: Phase 1 → Phase 2 → Phase 3 (App GW). Each requires approval. |
+| 5 | Merge `function_app/` to `dev` | **App — Dev Deploy** | Test → build → push `:dev` to ACR → webhook deploy to dev stamps |
+| 6 | Merge `function_app/` to `main` | **App — Prod Deploy** | Test → build → push `:latest` to ACR → approval gate → webhook deploy to prod stamps |
+
+#### Ongoing changes
+
+After initial deployment, the pipelines are path-scoped — only the affected pipeline runs:
+
+- Change Terraform code → infrastructure pipeline runs
+- Change `function_app/` → application pipeline runs
+- Open a PR → validation pipeline runs (fmt, validate, `terraform test`, pytest)
+
+### Pipelines
+
+Eight GitHub Actions workflows handle the full lifecycle. See [docs/2_CI-CD-Approach.md](docs/2_CI-CD-Approach.md) for the complete design.
+
+| Workflow | Trigger | Runner | Behaviour |
+|----------|---------|--------|-----------|
+| **Infra — Validate** | PR / feature push | GitHub-hosted | fmt, validate, `terraform test` (no Azure creds needed) |
+| **Infra — Core — Dev Plan** | Push to `dev` | GitHub-hosted | Plan only (core has no dev workspace) |
+| **Infra — Core — Prod Apply** | Push to `main` | GitHub-hosted | Plan → approval → apply |
+| **Infra — Env — Dev Apply** | Push to `dev` | Mixed | Phase 1 + Phase 2 auto-apply (Phase 3 skipped) |
+| **Infra — Env — Prod Apply** | Push to `main` | Mixed | 3 sequential gated tiers: Phase 1 → 2 → 3 |
+| **App — PR Validate** | PR to `dev`/`main` | Mixed | pytest + trial Docker build (image discarded) |
+| **App — Dev Deploy** | Push to `dev` | Mixed | Test → build → push `:dev` → webhook deploy |
+| **App — Prod Deploy** | Push to `main` | Mixed | Test → build → push `:latest` → approval → webhook deploy |
+
+#### Branch model
+
+```
+feature/xyz ──PR──► dev ──PR──► main
+                     │             │
+                  auto-deploy    gated (approval required)
 ```
 
-After apply, register the runner VM with GitHub:
-1. SSH to `vm-runner-core` via the jump box using `az ssh vm`
-2. Follow GitHub's self-hosted runner registration steps (Settings → Actions → Runners → New self-hosted runner)
+#### Runner selection
 
-### 3. Workload Infrastructure (`phase1/env` + `phase3`)
-
-> Deploys environment-specific resources (Function App, Storage, Key Vault, APIM) and configures mTLS certificates and secrets.
-
-Phase 3 requires the self-hosted runner (reaches private Key Vault and APIM endpoints inside the VNet).
-
-```bash
-# phase1/env
-cd terraform/phase1/env
-terraform workspace select dev   # or prod
-terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
-terraform apply tfplan
-
-# phase3 (after phase1/env completes)
-cd terraform/phase3
-terraform workspace select dev
-terraform plan -var-file=terraform.tfvars -var-file=dev.tfvars -out=tfplan
-terraform apply tfplan
-```
-
-Or trigger automatically via the workload infrastructure GitHub Actions pipeline on merge to `dev`.
-
-### 4. Application Deployment
-
-> Builds the Docker image, pushes to ACR, and triggers a Function App container refresh via the Kudu webhook.
-
-Triggered automatically by the application pipeline on merge to `dev` (or `main` for prod after approval).
-
-To test the API from the jump box:
-
-```powershell
-# From vm-jumpbox-core
-./scripts/Test-Application.ps1
-```
+Jobs that only talk to the Azure Resource Manager API (plan/apply for Phase 1, validation) run on **GitHub-hosted** runners. Jobs that need VNet access (Phase 2+3 apply, Docker build+push, webhook deploy) run on the **self-hosted** runner inside the VNet.
 
 ---
 
 ## OIDC Authentication
 
-GitHub Actions authenticates to Azure using OpenID Connect — no long-lived service principal secrets are stored.
+GitHub Actions authenticates to Azure using OpenID Connect — no long-lived secrets.
 
-### How It Works
+### How it works
 
-1. `prepare-azure-env.sh` creates a Service Principal and configures a **federated identity credential** on it, trusting GitHub as an OIDC issuer.
-2. Each GitHub Actions workflow requests a short-lived OIDC token from GitHub's token endpoint.
-3. The workflow exchanges this token for an Azure access token using the `azure/login` action with `ARM_USE_OIDC=true`.
-4. The access token is scoped to the subscription and expires at the end of the job.
+1. The bootstrap script creates an App Registration with federated credentials for each GitHub Actions context (branch push, environment, pull request).
+2. Workflows use `azure/login@v2` with OIDC, exchanging a GitHub-issued JWT for an Azure access token.
+3. The JWT subject claim (`repo:<owner>/<repo>:ref:refs/heads/<branch>` or `:environment:<env>`) is validated against the registered federated credentials.
 
-### Required Workflow Permissions
+### Federated Credentials
 
-All workflows that authenticate to Azure must include:
+| Credential | Subject | Used by |
+|------------|---------|---------|
+| `github-push-main` | `repo:<owner/repo>:ref:refs/heads/main` | Infra plan on main push |
+| `github-push-dev` | `repo:<owner/repo>:ref:refs/heads/dev` | Infra plan on dev push |
+| `github-env-prod` | `repo:<owner/repo>:environment:prod` | Gated apply to prod |
+| `github-env-dev` | `repo:<owner/repo>:environment:dev` | Auto-apply to dev |
+| `github-pull-request` | `repo:<owner/repo>:pull_request` | PR validation |
 
-```yaml
-permissions:
-  id-token: write
-  contents: read
-```
+### Service Principal Permissions
 
-### Federated Credential Configuration
-
-The federated credential is scoped to the repository and branch. The subject claim format is:
-
-```
-repo:<org>/<repo>:ref:refs/heads/<branch>
-```
-
-Separate credentials are configured for `dev` and `main` branches to enforce least-privilege environment separation.
+| Permission | Scope | Why |
+|------------|-------|-----|
+| Owner | Subscription | Create resources + assign RBAC roles |
+| Storage Blob Data Contributor | State storage account | Read/write Terraform state + plan files |
+| Application Developer | Entra ID directory | Create app registrations (EasyAuth) |
+| Directory Readers | Entra ID directory | Resolve users/groups in Terraform |
+| Application.ReadWrite.All | Microsoft Graph | Create service principals for app registrations |
 
 ---
 
 ## Teardown
 
-### Standard Teardown
+Teardown is not yet pipelined — it requires running `terraform destroy` in reverse phase order. Phase 2 and Phase 3 destroys must run from the self-hosted runner (private endpoint access required), so destroy core last.
 
-Destroy in reverse dependency order:
+### Step 1 — Destroy via the self-hosted runner
+
+SSH into the runner VM (or use the jump box to reach it) and run:
 
 ```bash
-# 1. Phase 3 (data-plane config — certs, secrets)
-cd terraform/phase3 && terraform workspace select <env> && terraform destroy
+# Application Gateway (phase 3)
+terraform -chdir=terraform/phase3 destroy -var-file=terraform.tfvars
 
-# 2. Phase 1 / env (Function App, Storage, APIM, Key Vault)
-cd terraform/phase1/env && terraform workspace select <env> && terraform destroy
-
-# 3. Phase 1 / core (VNet, ACR, VMs, Log Analytics)
-cd terraform/phase1/core && terraform destroy
+# Config, secrets, alerts — each workspace (phase 2)
+for env in prod dev; do
+  terraform -chdir=terraform/phase2/env workspace select "$env"
+  terraform -chdir=terraform/phase2/env destroy \
+    -var-file=terraform.tfvars -var-file="${env}.tfvars"
+done
 ```
 
-### Manual Steps (Beyond `terraform destroy`)
+### Step 2 — Destroy environment and core infrastructure
 
-The following resources are **not managed by Terraform** and must be cleaned up manually:
+These only need ARM API access, so they can run from any machine with Azure CLI auth:
 
-| Resource | Location | Action |
-|----------|----------|--------|
-| `rg-core-deploy` resource group | Azure Portal | Delete the resource group (contains state SA and SP) |
-| Terraform state storage account | Inside `rg-core-deploy` | Deleted with the resource group above |
-| Service Principal | Entra ID → App Registrations | Delete the SP and its federated credentials |
-| GitHub Actions self-hosted runner | GitHub repo → Settings → Runners | Remove the runner registration |
-| GitHub repository secrets | GitHub repo → Settings → Secrets | Delete `ARM_*` and `TF_STATE_STORAGE_ACCOUNT` secrets |
+```bash
+# Environment infrastructure — each workspace (phase 1 env)
+for env in prod dev; do
+  terraform -chdir=terraform/phase1/env workspace select "$env"
+  terraform -chdir=terraform/phase1/env destroy \
+    -var-file=terraform.tfvars -var-file="${env}.tfvars"
+done
 
-> **Soft-delete note:** Azure Key Vault has soft-delete enabled by default (90-day retention). If you need to re-deploy to the same subscription with the same Key Vault name, you may need to purge the deleted vault: `az keyvault purge --name <kv-name> --location uksouth`
+# Core infrastructure (phase 1 core) — destroy last
+terraform -chdir=terraform/phase1/core destroy
+```
+
+### Step 3 — Manual cleanup
+
+These resources exist outside Terraform and must be removed manually:
+
+| Resource | How to remove |
+|----------|---------------|
+| `rg-core-deploy` (state storage) | `az group delete --name rg-core-deploy` |
+| App Registration + Service Principal | `az ad app delete --id <APP_ID>` |
+| Entra ID role assignments | Removed automatically when the SP is deleted |
+| GitHub Actions secrets | Repository → Settings → Secrets |
+| GitHub environments (`dev`, `prod`) | Repository → Settings → Environments |
+| Self-hosted runner registration | Auto-deregisters when VM is destroyed; or manually via GitHub Settings → Actions → Runners |
+
+### Ordering constraints
+
+- **Phase 2 before Phase 1** — Phase 2 resources (APIM config, KV secrets) must be destroyed before Phase 1, which owns the APIM and Key Vault instances they depend on.
+- **Phase 3 before Phase 1 core** — The App GW subnet and NSG rules reference the core VNet.
+- **Core last** — The self-hosted runner lives in Phase 1 core and must remain available until Phase 2 and Phase 3 are destroyed.
 
 ---
 
 ## Assumptions
 
-The following assumptions were made during implementation. See [docs/0_Constraints-and-Assumptions.md](docs/0_Constraints-and-Assumptions.md) for the full constraint and assumption register.
-
 | ID | Assumption |
 |----|------------|
-| A-1 | A single Azure subscription and tenant are used for all environments. |
-| A-2 | The implementer has Owner access to the subscription. |
-| A-3 | All resources are greenfield — no existing VNet, Key Vault, or shared infrastructure is reused. |
-| A-4 | DNS resolution for Private Endpoints uses Azure-provided Private DNS Zones; no custom DNS server. |
-| A-5 | The API is consumed only by clients within the same VNet. No cross-VNet or on-premises peering. |
-| A-6 | Single region (`uksouth`) deployment. Multi-region is out of scope. |
-| A-7 | No data residency or compliance requirements beyond those in the spec. |
-| A-8 | The Function App uses the Elastic Premium (EP1) plan to support VNet integration on Consumption pricing. |
-| A-9 | GitHub OIDC federated credentials and repository secrets are configured manually (documented, not automated). |
-| A-10 | The self-hosted runner VM is registered with GitHub manually after Terraform provisioning. |
-| A-11 | Hub/Spoke topology is not implemented. Shared and workload infrastructure share a single VNet (`vnet-core`). In production this would be separated. |
-| A-12 | The jump box has a public RDP endpoint. In production this would be replaced with Azure Bastion. |
+| A-1 | A single Azure subscription and tenant are available for deployment. |
+| A-2 | The implementer has Owner or Contributor access to the target Azure subscription. |
+| A-3 | All resources are greenfield — no existing VNet, Key Vault, or shared infrastructure to reuse. |
+| A-4 | DNS resolution for Private Endpoints uses Azure Private DNS Zones (no custom DNS server). |
+| A-5 | The API is consumed only by clients within the same VNet or via the Application Gateway (no cross-VNet or on-premises peering). |
+| A-6 | Single region deployment (North Europe). Multi-region is out of scope. |
+| A-7 | No data residency or compliance requirements beyond what the spec states. |
+| A-8 | GitHub repository secrets and environments are configured manually (documented, not automated). |
+| A-9 | Global resource naming collisions (e.g. storage accounts) are accepted as unlikely — a clash at apply time is immediately obvious. |
+| A-10 | A Windows jump box with Entra ID RDP is used instead of VPN Gateway or Bastion for VNet access — avoids the complexity of private DNS resolvers. |
 
 ---
 
 ## Estimated Azure Costs
 
-> Estimates are approximate (UK South, Pay-As-You-Go) as of early 2026. Actual costs depend on usage and data volumes.
+Monthly cost estimate for a single environment (dev, 2 stamps). Prices are approximate (UK South / North Europe, pay-as-you-go).
 
-| Resource | SKU / Plan | Est. Monthly Cost |
-|----------|------------|-------------------|
-| API Management | Developer tier | ~£50 |
-| Function App | Elastic Premium EP1 | ~£120 |
-| Azure Container Registry | Basic tier | ~£4 |
-| Azure Key Vault | Standard, ~10 operations/day | <£1 |
-| Storage Account (state + function) | LRS, minimal data | ~£2 |
-| Log Analytics Workspace | Pay-per-GB, minimal ingestion | ~£2 |
-| Application Insights | Pay-per-GB | ~£1 |
-| NAT Gateway | Standard, ~1 GB egress | ~£30 |
-| Jump Box VM | Standard_B2s, Windows 11 | ~£35 |
-| Runner VM | Standard_B2s, Ubuntu 22.04 | ~£30 |
-| Private DNS Zones | ~10 zones | ~£5 |
-| Public IPs | 2 (NAT GW + jump box) | ~£6 |
-| **Total (estimate)** | | **~£285/month** |
+| Resource | SKU | Approx. monthly cost |
+|----------|-----|---------------------|
+| APIM | Developer | ~£37 |
+| ACR | Premium | ~£42 |
+| App Service Plan (×2) | B1 | ~£24 (£12 each) |
+| Application Gateway | Standard_v2 (1 unit) | ~£140 |
+| Jump box VM | Standard_B2s | ~£27 |
+| Runner VM | Standard_B2s | ~£27 |
+| Log Analytics | PerGB2018 | ~£2 (low volume) |
+| Storage Accounts (×2) | Standard_LRS | ~£2 |
+| Key Vaults (×3) | Standard | ~£0 (pay-per-operation) |
+| NAT Gateway + Public IPs (×3) | Standard | ~£30 + £10 |
+| Private Endpoints (×13) | — | ~£10 |
+| App Insights (×2) | — | ~£0 (included in LAW) |
+| **Total (1 env)** | | **~£350/month** |
 
-> **Cost reduction options:** APIM Consumption tier (~£0 + per-call charges) instead of Developer tier saves ~£50/month. Deallocating the jump box and runner VMs when not in use eliminates ~£65/month. Tear down non-production stamps when not needed.
+> **Cost-saving notes:**
+> - Stop VMs when not in use (`az vm deallocate`) — saves ~£54/month.
+> - The Application Gateway is the single largest cost. In a real assessment environment, deploy it last and destroy it first.
+> - APIM Developer tier has no SLA and is not suitable for production.
+> - Adding a `prod` environment roughly doubles stamp and APIM costs (~£130 more), but core resources (VNet, ACR, LAW, VMs, App GW, NAT GW) are shared.
 
 ---
 
 ## AI Usage & Critique
 
-This project made use of AI coding assistants (Claude Sonnet via Claude Code) throughout the implementation. Per the assessment requirements (DC-7), the prompt log and a technical critique of AI output are documented below.
+AI coding assistants (GitHub Copilot with Claude) were used extensively throughout this project. A full prompt log is maintained in [AI_Prompt_Log.md](AI_Prompt_Log.md).
 
-### Prompt Log
+### How AI was used
 
-See [AI_Prompt_Log.md](AI_Prompt_Log.md) for a full record of prompts used during implementation.
+| Phase | Usage |
+|-------|-------|
+| Requirements extraction | Extracted and structured requirements from the specification |
+| Solution design | Generated initial design docs, refined through iterative prompting |
+| Implementation planning | Module structure, naming conventions, workspace strategy |
+| Terraform code | Generated initial module and root code, heavily reviewed and refactored |
+| Python Function App | Generated initial app code and tests |
+| CI/CD workflows | Generated GitHub Actions workflow files |
+| Documentation | Generated and updated documentation to reflect actual implementation |
 
-### Technical Critique of AI Output
+### Critique of AI Output
 
-The following issues were identified and corrected in AI-generated Terraform and scripts:
+| Pattern | Observation | Mitigation |
+|---------|-------------|------------|
+| Over-modularisation | AI tends to wrap everything in modules, even singletons (ACR, LAW). Adds indirection without reuse benefit. | Explicit instruction to only modularise where reuse is expected. |
+| Permissive defaults | Generated NSG rules were too broad (e.g. `*` for source). Storage accounts defaulted to public access. | Manual review hardened all security posture. Deny-all baseline added. |
+| Stale provider knowledge | Some generated code used deprecated attributes or old provider syntax. | Ran `terraform validate` and fixed issues. |
+| Missing cross-cutting concerns | AI-generated modules didn't account for cross-subnet NSG rules (e.g. APIM → Function App). | Added `workload-stamp-subnet` module to handle cross-cutting rules. |
+| Hallucinated resources | Occasionally referenced Azure resources or attributes that don't exist in the provider. | Caught by `terraform validate` and plan. |
+| Doc drift | AI-generated docs described intended design, not actual implementation. Phase numbering, resource names, and feature completeness diverged. | Full doc refresh against actual codebase. |
+| Naming inconsistency | Generated code didn't follow the stated naming convention consistently. | Manual pass to enforce `<abbr>-wkld-<N>-<env>` pattern. |
 
-| Area | Issue | Action Taken |
-|------|-------|-------------|
-| _To be completed during implementation_ | | |
+---
 
-#### Common Patterns Observed
+## Documentation
 
-- **Overly permissive NSG rules:** AI tended to suggest `*` source/destination instead of specific CIDRs or service tags. All NSG rules were reviewed and tightened to least-privilege.
-- **Missing `private_endpoint_network_policies`:** AI-generated subnet resources frequently omitted `private_endpoint_network_policies = "Enabled"`, which silently disables NSG enforcement on PE subnets.
-- **Public access not explicitly disabled:** Resources such as Key Vault and Storage Accounts required explicit `public_network_access_enabled = false` — AI often defaulted to public access or omitted the attribute.
-- **Hardcoded values:** AI occasionally hardcoded subscription IDs, tenant IDs, or location strings rather than using variables. All were replaced with parameterised inputs.
-- **Non-idiomatic Terraform:** Some generated code used `count` where `for_each` would be more appropriate for named resources, increasing risk of resource replacement on reorder.
+Detailed design and planning documents are in the [docs/](docs/) directory:
+
+| Document | Content |
+|----------|---------|
+| [Functional Requirements](docs/0_Functional-Requirements.md) | What the system shall do |
+| [Nonfunctional Requirements](docs/0_Nonfunctional-Requirements.md) | Security, reliability, maintainability |
+| [Constraints & Assumptions](docs/0_Constraints-and-Assumptions.md) | Project boundaries and working assumptions |
+| [Solution Design](docs/1_Infrastructure-Solution-Design.md) | Architecture decisions and design rationale |
+| [Technical Design](docs/1_Infrastructure-Technical-Design.md) | Network topology, NSG rules, DNS |
+| [Implementation Planning](docs/1_Infrastructure-Implementation-Planning.md) | Module structure, phases, workspace workflow |
+| [Bill of Materials](docs/1_Azure-Infrastructure-Bill-of-Materials.md) | Complete Azure resource inventory |
+| [APIM Planning](docs/2_APIM-Planning.md) | API Management configuration and auth flow |
+| [Application Planning](docs/2_Application-Planning.md) | Function App design, API spec, observability |
+| [CI/CD Approach](docs/2_CI-CD-Approach.md) | Pipeline design, runners, promotion model |
+| [Gap Analysis](docs/3_Gap-Analysis.md) | Requirements vs. delivered solution |
