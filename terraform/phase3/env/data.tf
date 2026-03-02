@@ -31,3 +31,14 @@ data "terraform_remote_state" "env" {
     key                  = "phase1-env.tfstate"
   }
 }
+
+# ─── Application Insights — per stamp ────────────────────────────────────────
+# Looked up to read the exact location of each App Insights instance.
+# Standard web tests must be created in the same location as their linked
+# component — which may differ from var.location when stamps span regions.
+
+data "azurerm_application_insights" "stamps" {
+  for_each            = local.stamps_map
+  name                = "appi-wkld-${each.key}-${local.environment}"
+  resource_group_name = local.env.resource_group_stamps[each.key]
+}
