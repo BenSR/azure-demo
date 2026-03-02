@@ -80,3 +80,11 @@ output "availability_alert_ids" {
   }
   description = "Map of stamp number → availability alert rule resource ID."
 }
+
+output "query_5xx_alert_ids" {
+  value = {
+    for stamp_key, alert in azurerm_monitor_scheduled_query_rules_alert_v2.func_5xx_query :
+    stamp_key => alert.id
+  }
+  description = "Map of stamp number → scheduled query rule alert resource ID (HTTP 5xx direct query)."
+}

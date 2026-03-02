@@ -7,10 +7,10 @@
   },
   "customizations": {
     "vscode": {
-      "settings": {
-      },
+      "settings": {},
       "extensions": [
-        "anthropic.claude-code"
+        "anthropic.claude-code",
+        "github.vscode-github-actions"
       ]
     }
   }

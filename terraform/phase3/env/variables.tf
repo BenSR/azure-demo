@@ -1,4 +1,12 @@
 
+# ─── Location ─────────────────────────────────────────────────────────────────
+
+variable "location" {
+  type        = string
+  default     = "uksouth"
+  description = "Azure region for resources that require an explicit location (scheduled query rule alerts)."
+}
+
 # ─── Remote state ────────────────────────────────────────────────────────────
 
 variable "state_storage_account_name" {

@@ -59,6 +59,50 @@ resource "azurerm_monitor_metric_alert" "func_failures" {
   tags = local.tags
 }
 
+# ─── Scheduled Query Alert — HTTP 5xx Responses ───────────────────────────────
+# Queries the Application Insights requests table directly so the alert fires
+# on any HTTP 5xx response, regardless of whether the Functions runtime also
+# raises an exception.  This is more reliable than the metric-based
+# requests/failed alert for deliberately-returned 500s (no exception raised).
+#
+# Scope: Application Insights resource (workspace-based).  The KQL query runs
+# in the context of the App Insights resource and has access to the requests,
+# traces, exceptions, and dependencies tables.
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "func_5xx_query" {
+  for_each = local.stamps_map
+
+  name                = "sqr-func-5xx-stamp-${each.key}-${local.environment}"
+  resource_group_name = local.env.resource_group_stamps[each.key]
+  location            = var.location
+
+  description          = "Stamp ${each.key} (${local.environment}): HTTP 5xx response detected in Application Insights requests table"
+  severity             = 2
+  evaluation_frequency = "PT5M"
+  window_duration      = "PT5M"
+  auto_mitigation_enabled = true
+
+  scopes = [local.env.app_insights_ids[each.key]]
+
+  criteria {
+    query                   = "requests | where resultCode startswith \"5\""
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.wkld.id]
+  }
+
+  tags = local.tags
+}
+
 # ─── Metric Alert — Function App Availability ─────────────────────────────────
 # Triggers when the availability percentage reported by Application Insights
 # drops below the configured threshold.  This metric is populated by the

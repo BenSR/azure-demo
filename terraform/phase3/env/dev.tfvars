@@ -16,7 +16,7 @@ stamps = [
   { stamp_name = "2" },
 ]
 
-# Alert thresholds — more permissive in dev to reduce noise.
-alert_5xx_failure_threshold          = 10
-alert_5xx_window_minutes             = 15
+# Alert thresholds — low in dev so a single test 500 will fire the alert.
+alert_5xx_failure_threshold          = 1
+alert_5xx_window_minutes             = 5
 alert_availability_threshold_percent = 95.0
