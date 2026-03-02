@@ -100,6 +100,32 @@ resource "azurerm_private_dns_a_record" "apim_gateway" {
   records             = [tolist(azurerm_api_management.this.private_ip_addresses)[0]]
 }
 
+import {
+  to = azurerm_private_dns_a_record.apim_management
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${local.core.resource_group_core}/providers/Microsoft.Network/privateDnsZones/azure-api.net/A/apim-${local.name_suffix}.management"
+}
+
+resource "azurerm_private_dns_a_record" "apim_management" {
+  name                = "${azurerm_api_management.this.name}.management"
+  zone_name           = "azure-api.net"
+  resource_group_name = local.core.resource_group_core
+  ttl                 = 300
+  records             = [tolist(azurerm_api_management.this.private_ip_addresses)[0]]
+}
+
+import {
+  to = azurerm_private_dns_a_record.apim_scm
+  id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${local.core.resource_group_core}/providers/Microsoft.Network/privateDnsZones/azure-api.net/A/apim-${local.name_suffix}.scm"
+}
+
+resource "azurerm_private_dns_a_record" "apim_scm" {
+  name                = "${azurerm_api_management.this.name}.scm"
+  zone_name           = "azure-api.net"
+  resource_group_name = local.core.resource_group_core
+  ttl                 = 300
+  records             = [tolist(azurerm_api_management.this.private_ip_addresses)[0]]
+}
+
 # ─── APIM — diagnostic settings ───────────────────────────────────────────────
 resource "azurerm_monitor_diagnostic_setting" "apim" {
   name                       = "diag-apim-${local.name_suffix}"
