@@ -86,6 +86,11 @@ variable "entra_app_client_id" {
   description = "Application (client) ID of the Entra ID app registration for this stamp's Function App. Used to configure EasyAuth (auth_settings_v2) so the Function App validates Entra tokens issued by APIM's Managed Identity."
 }
 
+variable "admin_user_principal_name" {
+  type        = string
+  description = "UPN of the Entra ID user to grant Key Vault Secrets Officer on this stamp's Key Vault (e.g. user@example.com)."
+}
+
 variable "tags" {
   type        = map(string)
   default     = {}
