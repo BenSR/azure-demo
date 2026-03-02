@@ -3,7 +3,7 @@
 
 variable "location" {
   type        = string
-  default     = "uksouth"
+  default     = "northeurope"
   description = "Azure region for resources that require an explicit location (scheduled query rule alerts)."
 }
 

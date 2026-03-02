@@ -133,7 +133,7 @@ resource "azurerm_application_insights_standard_web_test" "health" {
 
   name                    = "webtest-health-stamp-${each.key}-${local.environment}"
   resource_group_name     = local.env.resource_group_stamps[each.key]
-  location                = var.location
+  location                = data.azurerm_application_insights.stamps[each.key].location
   application_insights_id = local.env.app_insights_ids[each.key]
   frequency               = var.web_test_frequency_seconds
   timeout                 = var.web_test_timeout_seconds
