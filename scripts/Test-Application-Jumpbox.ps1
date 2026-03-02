@@ -131,7 +131,7 @@ catch {
 }
 
 # Build a PFX from the client cert + key so .NET HttpClient can use it.
-# OpenSSL is expected on the jumpbox (ships with Git for Windows / Win11).
+# OpenSSL is installed on the jumpbox by the Custom Script Extension (via Git for Windows).
 Write-Host "Building PFX from client certificate..." -ForegroundColor Yellow
 $pfxPath     = "$CertDir\client.pfx"
 $pfxPassword = "test-smoke"

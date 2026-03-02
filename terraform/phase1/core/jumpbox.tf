@@ -76,7 +76,8 @@ resource "azurerm_windows_virtual_machine" "jumpbox" {
 # re-triggers the Custom Script Extension on the next terraform apply.
 
 locals {
-  jumpbox_test_script = "${path.root}/../../../scripts/Test-Application-Jumpbox.ps1"
+  jumpbox_test_script  = "${path.root}/../../../scripts/Test-Application-Jumpbox.ps1"
+  jumpbox_setup_script = "${path.root}/../../../scripts/Setup-Jumpbox.ps1"
 }
 
 resource "azurerm_storage_blob" "jumpbox_test_script" {
@@ -88,18 +89,27 @@ resource "azurerm_storage_blob" "jumpbox_test_script" {
   content_type           = "application/octet-stream"
 }
 
+resource "azurerm_storage_blob" "jumpbox_setup_script" {
+  name                   = "Setup-Jumpbox-${filemd5(local.jumpbox_setup_script)}.ps1"
+  storage_account_name   = var.deploy_storage_account_name
+  storage_container_name = azurerm_storage_container.scripts.name
+  type                   = "Block"
+  source                 = local.jumpbox_setup_script
+  content_type           = "application/octet-stream"
+}
+
 # ─── Jump box — Custom Script Extension ──────────────────────────────────────
-# Downloads the test script from blob storage and copies it to C:\.
-# Also installs the Azure CLI silently (required by the test script for
-# Key Vault certificate retrieval).
+# Downloads both the setup and test scripts from blob storage, then runs the
+# setup script which installs prerequisites and copies the test script to C:\.
+#
+# Prerequisites installed by Setup-Jumpbox.ps1:
+#   1. Azure CLI        — for Key Vault certificate retrieval
+#   2. Git for Windows  — bundles openssl, needed to build PFX from PEM certs
 #
 # Windows VMs use the Microsoft.Compute / CustomScriptExtension publisher
 # (not Microsoft.Azure.Extensions which is Linux-only).
 #
 # The storage account key in protected_settings authenticates the download.
-# commandToExecute chains two steps:
-#   1. Copy the downloaded script to C:\Test-Application-Jumpbox.ps1
-#   2. Install Azure CLI via MSI (silent, no restart)
 
 resource "azurerm_virtual_machine_extension" "jumpbox_setup" {
   name                       = "jumpbox-setup"
@@ -111,17 +121,21 @@ resource "azurerm_virtual_machine_extension" "jumpbox_setup" {
 
   settings = jsonencode({
     fileUris = [
-      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/Test-Application-Jumpbox-${filemd5(local.jumpbox_test_script)}.ps1"
+      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/Test-Application-Jumpbox-${filemd5(local.jumpbox_test_script)}.ps1",
+      "https://${var.deploy_storage_account_name}.blob.core.windows.net/scripts/Setup-Jumpbox-${filemd5(local.jumpbox_setup_script)}.ps1"
     ]
   })
 
   protected_settings = jsonencode({
     storageAccountName = var.deploy_storage_account_name
     storageAccountKey  = data.azurerm_storage_account.deploy.primary_access_key
-    commandToExecute   = "powershell -ExecutionPolicy Unrestricted -Command \"Copy-Item -Path '.\\Test-Application-Jumpbox-${filemd5(local.jumpbox_test_script)}.ps1' -Destination 'C:\\Test-Application-Jumpbox.ps1' -Force; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://aka.ms/installazurecliwindowsx64' -OutFile '.\\AzureCLI.msi'; Start-Process msiexec.exe -ArgumentList '/I AzureCLI.msi /quiet /norestart' -Wait\""
+    commandToExecute   = "powershell -ExecutionPolicy Unrestricted -File \"Setup-Jumpbox-${filemd5(local.jumpbox_setup_script)}.ps1\" -TestScriptFileName \"Test-Application-Jumpbox-${filemd5(local.jumpbox_test_script)}.ps1\""
   })
 
-  depends_on = [azurerm_storage_blob.jumpbox_test_script]
+  depends_on = [
+    azurerm_storage_blob.jumpbox_test_script,
+    azurerm_storage_blob.jumpbox_setup_script
+  ]
 
   tags = local.tags
 }
