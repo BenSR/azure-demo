@@ -103,16 +103,17 @@ resource "azurerm_network_security_rule" "appgw_in_deny_all" {
 
 # ── App GW subnet — Outbound rules ───────────────────────────────────────────
 
-resource "azurerm_network_security_rule" "appgw_out_allow_apim_http" {
-  # App GW → APIM backend over HTTP (port 80) within the VNet.
-  # TLS is terminated at the App GW; backend traffic is plain HTTP.
-  name                        = "allow-outbound-apim-http"
+resource "azurerm_network_security_rule" "appgw_out_allow_apim_https" {
+  # App GW → APIM backend over HTTPS (port 443) within the VNet.
+  # App GW terminates client TLS then re-establishes HTTPS to APIM
+  # (end-to-end TLS).  The backend cert is verified against the project CA.
+  name                        = "allow-outbound-apim-https"
   priority                    = 100
   direction                   = "Outbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
-  destination_port_range      = "80"
+  destination_port_range      = "443"
   source_address_prefix       = "*"
   destination_address_prefix  = "10.100.129.32/27" # snet-apim
   resource_group_name         = local.core.resource_group_core
@@ -171,19 +172,19 @@ resource "azurerm_network_security_rule" "appgw_out_allow_dns" {
 # from the established naming convention (nsg-core-<subnet-suffix>, rg-core).
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── snet-apim: allow inbound HTTP from App GW ────────────────────────────────
-# APIM receives backend traffic from App GW on port 80 (HTTP).
-# Existing port 443 rule (VirtualNetwork-scoped) already covers HTTPS;
-# port 80 needs an explicit allow since the App GW terminates TLS.
+# ── snet-apim: allow inbound HTTPS from App GW ───────────────────────────────
+# APIM receives backend traffic from App GW on port 443 (HTTPS).
+# End-to-end TLS: App GW terminates the client connection then re-establishes
+# HTTPS to APIM, presenting the CA-signed gateway certificate.
 
-resource "azurerm_network_security_rule" "apim_in_allow_appgw_http" {
-  name                        = "allow-inbound-appgw-http"
+resource "azurerm_network_security_rule" "apim_in_allow_appgw_https" {
+  name                        = "allow-inbound-appgw-https"
   priority                    = 140
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
-  destination_port_range      = "80"
+  destination_port_range      = "443"
   source_address_prefix       = var.appgw_subnet_cidr
   destination_address_prefix  = "*"
   resource_group_name         = local.core.resource_group_core

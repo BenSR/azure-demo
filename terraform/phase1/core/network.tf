@@ -156,17 +156,27 @@ module "workload_stamp_subnet" {
 # ─── snet-apim  (API Management — internal VNet mode) ─────────────────────────
 # APIM in internal VNet mode requires specific management-plane rules.
 # See: https://learn.microsoft.com/azure/api-management/api-management-using-with-internal-vnet
+#
+# Inbound access is locked down to explicit sources only (deny-all at 4000).
+# The only callers that should reach APIM are:
+#   - Azure Load Balancer health probes (port 443)
+#   - Azure management plane (port 3443)
+#   - Application Gateway backend (port 443) — added by phase3/network.tf
+#   - Jumpbox (port 443) for admin/debugging
 
-resource "azurerm_network_security_rule" "apim_in_allow_vnet_https" {
-  name                        = "allow-inbound-vnet-https"
+resource "azurerm_network_security_rule" "apim_in_allow_lb_https" {
+  # Azure internal load balancer health probes for the APIM gateway (port 443).
+  # Replaces the previous VirtualNetwork-scoped rule which allowed all VNet
+  # resources to reach APIM — that was too broad.
+  name                        = "allow-inbound-lb-https"
   priority                    = 100
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "443"
-  source_address_prefix       = "VirtualNetwork"
-  destination_address_prefix  = "VirtualNetwork"
+  source_address_prefix       = "AzureLoadBalancer"
+  destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.core.name
   network_security_group_name = module.vnet.nsg_names["snet-apim"]
 }
@@ -210,6 +220,22 @@ resource "azurerm_network_security_rule" "apim_in_allow_jumpbox" {
   source_port_range           = "*"
   destination_port_range      = "443"
   source_address_prefix       = local.subnet_cidrs.jumpbox
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.core.name
+  network_security_group_name = module.vnet.nsg_names["snet-apim"]
+}
+
+resource "azurerm_network_security_rule" "apim_in_deny_all" {
+  # Explicit deny-all ensures no VNet resource can reach APIM unless it has an
+  # allow rule above.  AppGW's allow rule (port 443) is added by phase3.
+  name                        = "deny-all-inbound"
+  priority                    = 4000
+  direction                   = "Inbound"
+  access                      = "Deny"
+  protocol                    = "*"
+  source_port_range           = "*"
+  destination_port_range      = "*"
+  source_address_prefix       = "*"
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.core.name
   network_security_group_name = module.vnet.nsg_names["snet-apim"]
