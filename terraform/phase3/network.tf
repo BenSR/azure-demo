@@ -41,6 +41,8 @@ resource "azurerm_subnet" "appgw_pl" {
   resource_group_name  = local.core.resource_group_core
   virtual_network_name = data.azurerm_virtual_network.core.name
   address_prefixes     = [var.appgw_pl_subnet_cidr]
+
+  private_link_service_network_policies_enabled = false
 }
 
 # ─── NSG: nsg-core-appgw ─────────────────────────────────────────────────────
