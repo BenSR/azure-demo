@@ -77,6 +77,7 @@ jobs:
             -var-file=terraform.tfvars \
             -var-file=prod.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -var="admin_user_upn=${{ secrets.ADMIN_ENTRA_UPN }}" \
             -out=/tmp/tfplan-infra-prod \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 

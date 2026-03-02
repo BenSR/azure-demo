@@ -32,6 +32,16 @@ resource "azurerm_role_assignment" "kv_admin_cicd" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+# ─── Key Vault — Admin user access ────────────────────────────────────────────
+# Allows the admin user to read and manage secrets in the stamp KV via the
+# Azure portal or CLI (e.g. for troubleshooting from the jumpbox).
+
+resource "azurerm_role_assignment" "kv_secrets_officer_admin" {
+  scope                = azurerm_key_vault.this.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azuread_user.admin.object_id
+}
+
 # ─── Key Vault — APIM access ───────────────────────────────────────────────────
 # In Phase 3, APIM will load the CA certificate from this stamp's KV for mTLS
 # client certificate validation.  Pre-assign both roles so Phase 3 can

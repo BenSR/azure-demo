@@ -25,9 +25,9 @@
     Requires: Azure CLI (az), PowerShell 5.1+.
 #>
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # CONFIGURATION — edit these values to match your deployment
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 # Environment name (must match the Terraform workspace: "dev" or "prod")
 $Environment     = "dev"
@@ -52,9 +52,9 @@ $KeyVaultName    = "kv-${Workload}-${StampNumber}-${Environment}"
 # Temp directory for downloaded certificates
 $CertDir         = "$env:TEMP\azure-demo-test-certs"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 $ErrorActionPreference = "Stop"
 $passed = 0
@@ -79,9 +79,9 @@ function Write-TestResult {
     if ($Success) { $script:passed++ } else { $script:failed++ }
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # PRE-FLIGHT — download certs from Key Vault
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -155,9 +155,9 @@ catch {
     exit 1
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # BASE URL
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 $BaseUrl = "https://${ApimGatewayHost}/${ApiPath}"
 
@@ -180,9 +180,9 @@ Write-Host " Running Tests"                           -ForegroundColor Cyan
 Write-Host "----------------------------------------" -ForegroundColor Cyan
 Write-Host ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 1: DNS Resolution
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $dns = Resolve-DnsName -Name $ApimGatewayHost -ErrorAction Stop
@@ -196,9 +196,9 @@ catch {
         -Detail "Failed to resolve $ApimGatewayHost — $_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 2: Health Endpoint (no mTLS required)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $healthUrl = "$BaseUrl/health"
@@ -213,9 +213,9 @@ catch {
         -Detail "HTTP $statusCode — $_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 3: Echo Endpoint — Happy Path (mTLS + valid payload)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl  = "$BaseUrl/echo"
@@ -256,9 +256,9 @@ catch {
         -Detail "HTTP $statusCode — $_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 4: Echo Endpoint — Missing Message Field (expect 400)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl  = "$BaseUrl/echo"
@@ -300,9 +300,9 @@ catch {
         -Detail "$_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 5: Echo Endpoint — Empty Message (expect 400)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl  = "$BaseUrl/echo"
@@ -342,9 +342,9 @@ catch {
         -Detail "$_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 6: Echo Endpoint — Malformed JSON (expect 400)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl  = "$BaseUrl/echo"
@@ -384,9 +384,9 @@ catch {
         -Detail "$_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 7: Echo Endpoint — No Client Certificate (expect 403)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl  = "$BaseUrl/echo"
@@ -428,9 +428,9 @@ catch {
         -Detail "Connection error (acceptable if TLS handshake rejected): $_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 8: Echo Endpoint — Wrong HTTP Method (expect 405 or 404)
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 try {
     $echoUrl = "$BaseUrl/echo"
@@ -459,13 +459,13 @@ catch {
         -Detail "$_"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # TEST 9: Alert Trigger — Deliberate 500s via trip_server_side_error
 #
 # The func_failures alert fires when requests/failed exceeds the threshold
 # (default 5) within the evaluation window (default 15 min).  We send enough
 # 500-producing requests to guarantee the alert trips.
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 $alertIterations       = 8   # comfortably above the default threshold of 5
 $alertSuccessCount     = 0
@@ -493,7 +493,7 @@ for ($i = 1; $i -le $alertIterations; $i++) {
             $webResponse = $webRequest.GetResponse()
             $webResponse.Close()
             # 2xx is unexpected — the flag should have caused a 500
-            $alertFailureDetails += "Iteration $i: Expected 500 but received 2xx"
+            $alertFailureDetails += "Iteration ${i}: Expected 500 but received 2xx"
         }
         catch [System.Net.WebException] {
             $errResponse   = $_.Exception.Response
@@ -507,12 +507,12 @@ for ($i = 1; $i -le $alertIterations; $i++) {
                 Write-Host "  [$i/$alertIterations] HTTP 500 DELIBERATE_ERROR — OK" -ForegroundColor DarkGray
             }
             else {
-                $alertFailureDetails += "Iteration $i: HTTP $errStatusCode, code=$($errBody.error.code)"
+                $alertFailureDetails += "Iteration ${i}: HTTP $errStatusCode, code=$($errBody.error.code)"
             }
         }
     }
     catch {
-        $alertFailureDetails += "Iteration $i: $_"
+        $alertFailureDetails += "Iteration ${i}: $_"
     }
 
     # Brief pause to avoid request coalescing in telemetry pipeline
@@ -529,9 +529,9 @@ $detail     = if ($allTripped) {
 Write-TestResult -TestName "Alert Trigger — Deliberate 500s ($alertIterations requests)" `
     -Success $allTripped -Detail $detail
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # SUMMARY
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -545,9 +545,9 @@ $totalColor = if ($failed -eq 0) { "Green" } else { "Red" }
 Write-Host "Total: $($passed + $failed)  Passed: $passed  Failed: $failed" -ForegroundColor $totalColor
 Write-Host ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 # CLEANUP
-# ═══════════════════════════════════════════════════════════════════════════════
+# -------------------------------------------------------------------------------
 
 Write-Host "Cleaning up temp certificates..." -ForegroundColor Yellow
 Remove-Item -Path $CertDir -Recurse -Force -ErrorAction SilentlyContinue
