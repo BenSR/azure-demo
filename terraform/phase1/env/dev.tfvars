@@ -15,12 +15,12 @@ stamps = [
     stamp_name = "1"
     location   = "northeurope"
     image_name = "wkld-api"
-    image_tag  = "latest"
+    image_tag  = "dev"
   },
   {
     stamp_name = "2"
     location   = "northeurope"
     image_name = "wkld-api"
-    image_tag  = "latest"
+    image_tag  = "dev"
   },
 ]
