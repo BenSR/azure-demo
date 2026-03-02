@@ -59,11 +59,11 @@ def error_response(
 # ─── Triggers ─────────────────────────────────────────────────────────────────
 
 
-@app.route(route="echo", methods=["POST"])
-def echo(req: func.HttpRequest) -> func.HttpResponse:
-    """POST /api/echo — validates payload and returns message with metadata."""
+@app.route(route="message", methods=["POST"])
+def message(req: func.HttpRequest) -> func.HttpResponse:
+    """POST /api/message — validates payload and returns message with metadata."""
     request_id = get_request_id(req)
-    logger.info("echo request %s", request_id)
+    logger.info("message request %s", request_id)
 
     try:
         body = req.get_json()
