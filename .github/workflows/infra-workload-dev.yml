@@ -146,6 +146,7 @@ jobs:
             -var-file=terraform.tfvars \
             -var-file=dev.tfvars \
             -var="state_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -var='alert_email_receivers=["${{ secrets.ADMIN_EMAIL }}"]' \
             -out=/tmp/tfplan-phase3-dev \
             -no-color 2>&1 | tee /tmp/plan-output.txt
 

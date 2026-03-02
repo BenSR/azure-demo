@@ -65,6 +65,7 @@ jobs:
           terraform -chdir=${{ env.TF_ROOT }} plan \
             -var-file=terraform.tfvars \
             -var="runner_management_pat=${{ secrets.RUNNER_MANAGEMENT_PAT }}" \
+            -var="runner_admin_upn=${{ secrets.ADMIN_ENTRA_UPN }}" \
             -var="deploy_storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
             -out=/tmp/tfplan-core \
             -no-color 2>&1 | tee /tmp/plan-output.txt

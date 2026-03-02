@@ -21,11 +21,8 @@ location = "northeurope"
 jumpbox_vm_size = "Standard_B2s"
 
 # ─── Self-hosted runner ────────────────────────────────────────────────────────
-# runner_admin_upn: the Entra ID user who receives "Virtual Machine Administrator
-# Login" on the runner VM, enabling SSH via `az ssh vm` from the jumpbox.
 
-runner_vm_size   = "Standard_B2s"
-runner_admin_upn = "me@bensomervillerobertsoutlook.onmicrosoft.com"
+runner_vm_size = "Standard_B2s"
 
 # ─── Stamp subnets ────────────────────────────────────────────────────────────
 # Each stamp gets a PE subnet (Private Endpoints) and an ASP subnet (App

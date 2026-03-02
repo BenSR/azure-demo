@@ -547,6 +547,34 @@ resource "azurerm_network_security_rule" "jumpbox_out_allow_dns" {
   network_security_group_name = module.vnet.nsg_names["snet-jumpbox"]
 }
 
+resource "azurerm_network_security_rule" "jumpbox_out_allow_internet_https" {
+  name                        = "allow-outbound-internet-https"
+  priority                    = 150
+  direction                   = "Outbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "443"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "Internet"
+  resource_group_name         = azurerm_resource_group.core.name
+  network_security_group_name = module.vnet.nsg_names["snet-jumpbox"]
+}
+
+resource "azurerm_network_security_rule" "jumpbox_out_allow_internet_http" {
+  name                        = "allow-outbound-internet-http"
+  priority                    = 160
+  direction                   = "Outbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "80"
+  source_address_prefix       = "*"
+  destination_address_prefix  = "Internet"
+  resource_group_name         = azurerm_resource_group.core.name
+  network_security_group_name = module.vnet.nsg_names["snet-jumpbox"]
+}
+
 resource "azurerm_network_security_rule" "jumpbox_out_deny_internet" {
   name                        = "deny-outbound-internet"
   priority                    = 4000
