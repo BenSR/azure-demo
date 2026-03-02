@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import azure.functions as func
 import pytest
 
-from function_app import echo, health, EchoRequest
+from function_app import message, health, EchoRequest
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ def build_request(
     method: str = "POST",
     body: bytes | None = None,
     headers: dict | None = None,
-    route: str = "echo",
+    route: str = "message",
 ) -> func.HttpRequest:
     """Build a mock HttpRequest for testing."""
     return func.HttpRequest(
@@ -67,14 +67,14 @@ class TestEchoRequestModel:
         assert not hasattr(req, "extra")
 
 
-# ─── POST /api/echo tests ────────────────────────────────────────────────────
+# ─── POST /api/message tests ─────────────────────────────────────────────────
 
 
 class TestEchoEndpoint:
     def test_happy_path(self):
         body = json.dumps({"message": "Hello, world!"}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 200
         data = parse_body(resp)
@@ -84,7 +84,7 @@ class TestEchoEndpoint:
 
     def test_malformed_json(self):
         req = build_request(body=b"not json")
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -93,7 +93,7 @@ class TestEchoEndpoint:
 
     def test_empty_body(self):
         req = build_request(body=b"")
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -102,7 +102,7 @@ class TestEchoEndpoint:
     def test_missing_message_key(self):
         body = json.dumps({"not_message": "oops"}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -111,7 +111,7 @@ class TestEchoEndpoint:
     def test_null_message(self):
         body = json.dumps({"message": None}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -120,7 +120,7 @@ class TestEchoEndpoint:
     def test_empty_message(self):
         body = json.dumps({"message": ""}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -129,7 +129,7 @@ class TestEchoEndpoint:
     def test_whitespace_message(self):
         body = json.dumps({"message": "   "}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -138,7 +138,7 @@ class TestEchoEndpoint:
     def test_integer_message(self):
         body = json.dumps({"message": 42}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -147,7 +147,7 @@ class TestEchoEndpoint:
     def test_array_message(self):
         body = json.dumps({"message": ["a", "b"]}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 400
         data = parse_body(resp)
@@ -156,7 +156,7 @@ class TestEchoEndpoint:
     def test_extra_fields_ignored(self):
         body = json.dumps({"message": "hello", "extra": "stuff"}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 200
         data = parse_body(resp)
@@ -166,7 +166,7 @@ class TestEchoEndpoint:
     def test_request_id_from_azure_header(self):
         body = json.dumps({"message": "hi"}).encode()
         req = build_request(body=body, headers={"x-ms-request-id": "azure-123"})
-        resp = echo(req)
+        resp = message(req)
 
         data = parse_body(resp)
         assert data["request_id"] == "azure-123"
@@ -174,7 +174,7 @@ class TestEchoEndpoint:
     def test_request_id_from_apim_header(self):
         body = json.dumps({"message": "hi"}).encode()
         req = build_request(body=body, headers={"x-request-id": "apim-456"})
-        resp = echo(req)
+        resp = message(req)
 
         data = parse_body(resp)
         assert data["request_id"] == "apim-456"
@@ -185,7 +185,7 @@ class TestEchoEndpoint:
             body=body,
             headers={"x-ms-request-id": "azure-123", "x-request-id": "apim-456"},
         )
-        resp = echo(req)
+        resp = message(req)
 
         data = parse_body(resp)
         assert data["request_id"] == "azure-123"
@@ -193,7 +193,7 @@ class TestEchoEndpoint:
     def test_request_id_generated_when_no_headers(self):
         body = json.dumps({"message": "hi"}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         data = parse_body(resp)
         # Should be a valid UUID4
@@ -202,7 +202,7 @@ class TestEchoEndpoint:
     def test_trip_server_side_error_returns_500(self):
         body = json.dumps({"message": "test", "trip_server_side_error": True}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 500
         data = parse_body(resp)
@@ -212,7 +212,7 @@ class TestEchoEndpoint:
     def test_trip_server_side_error_false_normal_response(self):
         body = json.dumps({"message": "test", "trip_server_side_error": False}).encode()
         req = build_request(body=body)
-        resp = echo(req)
+        resp = message(req)
 
         assert resp.status_code == 200
         data = parse_body(resp)

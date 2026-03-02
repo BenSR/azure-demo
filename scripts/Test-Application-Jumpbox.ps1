@@ -4,18 +4,18 @@
 
 .DESCRIPTION
     Validates the deployed application by exercising the APIM gateway endpoints
-    (health check, echo API with mTLS) from inside the VNet.
+    (health check, message API with mTLS) from inside the VNet.
 
     The jumpbox sits on snet-jumpbox and can reach APIM (internal VNet mode)
     and all Private Endpoints.  Tests cover:
 
-      1. DNS resolution — APIM gateway hostname resolves to a private IP.
-      2. Health endpoint — GET /api/health returns 200 with {"status":"healthy"}.
-      3. Echo endpoint (mTLS) — POST /api/echo with client cert returns 200
+      1. DNS resolution - APIM gateway hostname resolves to a private IP.
+      2. Health endpoint - GET /api/health returns 200 with {"status":"healthy"}.
+      3. Message endpoint (mTLS) - POST /api/message with client cert returns 200
          and the expected JSON payload.
-      4. Validation — POST /api/echo with missing/empty message returns 400.
-      5. Malformed JSON — POST /api/echo with invalid body returns 400.
-      6. Missing client cert — POST /api/echo without a client cert is rejected (403).
+      4. Validation - POST /api/message with missing/empty message returns 400.
+      5. Malformed JSON - POST /api/message with invalid body returns 400.
+      6. Missing client cert - POST /api/message without a client cert is rejected (403).
 
     Certificates are retrieved from Key Vault using the Azure CLI (the jumpbox
     identity or logged-in user must have Key Vault Secrets User on the stamp KV).
@@ -26,7 +26,7 @@
 #>
 
 # -------------------------------------------------------------------------------
-# CONFIGURATION — edit these values to match your deployment
+# CONFIGURATION - edit these values to match your deployment
 # -------------------------------------------------------------------------------
 
 # Environment name (must match the Terraform workspace: "dev" or "prod")
@@ -39,7 +39,7 @@ $Workload        = "wkld"
 $StampNumber     = "1"
 
 # APIM gateway hostname (from Terraform output: apim_gateway_url)
-# Internal VNet mode — resolves to a private IP within the VNet.
+# Internal VNet mode - resolves to a private IP within the VNet.
 # Example: apim-wkld-shared-dev.azure-api.net
 $ApimGatewayHost = "apim-${Workload}-shared-${Environment}.azure-api.net"
 
@@ -80,12 +80,12 @@ function Write-TestResult {
 }
 
 # -------------------------------------------------------------------------------
-# PRE-FLIGHT — download certs from Key Vault
+# PRE-FLIGHT - download certs from Key Vault
 # -------------------------------------------------------------------------------
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Azure Demo — Application Smoke Tests"   -ForegroundColor Cyan
+Write-Host " Azure Demo - Application Smoke Tests"   -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Environment : $Environment"
@@ -143,16 +143,57 @@ try {
         -in "$CertDir\client-cert.pem" `
         -passout "pass:$pfxPassword" 2>&1 | Out-Null
 
-    $clientCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-        $pfxPath, $pfxPassword,
-        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet
-    )
+    $certFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    $clientCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $pfxPassword, $certFlags)
     Write-Host "Client cert thumbprint: $($clientCert.Thumbprint)" -ForegroundColor Green
 }
 catch {
     Write-Host "ERROR: Failed to build PFX. Ensure openssl is on PATH." -ForegroundColor Red
     Write-Host "       $_" -ForegroundColor Red
     exit 1
+}
+
+# -------------------------------------------------------------------------------
+# SSL / CERT DIAGNOSTICS
+# -------------------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "----------------------------------------" -ForegroundColor Cyan
+Write-Host " SSL / Certificate Diagnostics"          -ForegroundColor Cyan
+Write-Host "----------------------------------------" -ForegroundColor Cyan
+Write-Host ""
+
+# Cert/key modulus match
+$certMod = & openssl x509 -noout -modulus -in "$CertDir\client-cert.pem" 2>&1
+$keyMod  = & openssl rsa  -noout -modulus -in "$CertDir\client-key.pem" 2>&1
+$modMatch = ($certMod -eq $keyMod)
+Write-Host "Cert/Key modulus match: $modMatch" -ForegroundColor $(if ($modMatch) {"Green"} else {"Red"})
+if (-not $modMatch) {
+    Write-Host "  Cert: $($certMod.Substring(0,[Math]::Min(50,$certMod.Length)))..." -ForegroundColor Gray
+    Write-Host "  Key:  $($keyMod.Substring(0,[Math]::Min(50,$keyMod.Length)))..." -ForegroundColor Gray
+}
+
+# Client cert details
+Write-Host "Client cert subject : $($clientCert.Subject)" -ForegroundColor Gray
+Write-Host "Client cert issuer  : $($clientCert.Issuer)" -ForegroundColor Gray
+Write-Host "Client cert expires : $($clientCert.NotAfter)" -ForegroundColor Gray
+Write-Host "Has private key     : $($clientCert.HasPrivateKey)" -ForegroundColor $(if ($clientCert.HasPrivateKey) {"Green"} else {"Red"})
+
+# openssl s_client handshake test
+Write-Host ""
+Write-Host "TLS handshake via openssl s_client..." -ForegroundColor Yellow
+try {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $sslOut = echo "Q" | & openssl s_client -connect "${ApimGatewayHost}:443" -cert "$CertDir\client-cert.pem" -key "$CertDir\client-key.pem" -servername $ApimGatewayHost -brief 2>&1
+    $ErrorActionPreference = $prevEAP
+    $sslText = $sslOut | Out-String
+    $sslText.Split("`n") | Where-Object { $_ -match "CONNECTION|Protocol|Cipher|Verification|subject|issuer" } | ForEach-Object {
+        Write-Host "  $_" -ForegroundColor Gray
+    }
+} catch {
+    $ErrorActionPreference = $prevEAP
+    Write-Host "  openssl s_client failed: $_" -ForegroundColor Red
 }
 
 # -------------------------------------------------------------------------------
@@ -169,8 +210,8 @@ if (-not ([System.Net.ServicePointManager]::ServerCertificateValidationCallback)
     [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
 }
 
-# Force TLS 1.2
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+# Enable TLS 1.2 and TLS 1.3 (TLS 1.3 = 12288; enum value may not exist in older .NET Framework)
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]12288
 
 Write-Host ""
 Write-Host "Base URL: $BaseUrl"
@@ -193,7 +234,7 @@ try {
 }
 catch {
     Write-TestResult -TestName "DNS Resolution" -Success $false `
-        -Detail "Failed to resolve $ApimGatewayHost — $_"
+        -Detail "Failed to resolve $ApimGatewayHost - $_"
 }
 
 # -------------------------------------------------------------------------------
@@ -202,28 +243,42 @@ catch {
 
 try {
     $healthUrl = "$BaseUrl/health"
-    $healthResponse = Invoke-RestMethod -Uri $healthUrl -Method GET -TimeoutSec 30
+
+    # Use HttpWebRequest (consistent with other tests) so that the
+    # ServerCertificateValidationCallback is honoured on all .NET versions.
+    $webRequest = [System.Net.HttpWebRequest]::Create($healthUrl)
+    $webRequest.Method  = "GET"
+    $webRequest.Timeout = 30000
+
+    $webResponse  = $webRequest.GetResponse()
+    $reader       = New-Object System.IO.StreamReader($webResponse.GetResponseStream())
+    $healthResponse = $reader.ReadToEnd() | ConvertFrom-Json
+    $reader.Close()
+    $webResponse.Close()
+
     $healthOk = ($healthResponse.status -eq "healthy") -and ($null -ne $healthResponse.timestamp)
     Write-TestResult -TestName "Health Endpoint (GET /api/health)" -Success $healthOk `
         -Detail "status=$($healthResponse.status), timestamp=$($healthResponse.timestamp)"
 }
 catch {
-    $statusCode = $_.Exception.Response.StatusCode.value__
+    $statusCode = if ($_.Exception.InnerException -is [System.Net.WebException]) {
+        $_.Exception.InnerException.Response.StatusCode.value__
+    } else { "N/A" }
     Write-TestResult -TestName "Health Endpoint (GET /api/health)" -Success $false `
-        -Detail "HTTP $statusCode — $_"
+        -Detail "HTTP $statusCode - $_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 3: Echo Endpoint — Happy Path (mTLS + valid payload)
+# TEST 3: Message Endpoint - Happy Path (mTLS + valid payload)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl  = "$BaseUrl/echo"
+    $msgUrl  = "$BaseUrl/message"
     $testMsg  = "Hello from jumpbox smoke test"
     $jsonBody = @{ message = $testMsg } | ConvertTo-Json
 
     # Use HttpWebRequest for client cert support
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method      = "POST"
     $webRequest.ContentType = "application/json"
     $webRequest.Timeout     = 30000
@@ -240,31 +295,31 @@ try {
     $reader.Close()
     $webResponse.Close()
 
-    $echoOk = (
+    $msgOk = (
         $responseBody.message -eq $testMsg -and
         $null -ne $responseBody.timestamp -and
         $null -ne $responseBody.request_id
     )
-    Write-TestResult -TestName "Echo Endpoint — Happy Path (POST /api/echo)" -Success $echoOk `
+    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/message)" -Success $msgOk `
         -Detail "message='$($responseBody.message)', request_id=$($responseBody.request_id)"
 }
 catch {
     $statusCode = if ($_.Exception.InnerException -is [System.Net.WebException]) {
         $_.Exception.InnerException.Response.StatusCode.value__
     } else { "N/A" }
-    Write-TestResult -TestName "Echo Endpoint — Happy Path (POST /api/echo)" -Success $false `
-        -Detail "HTTP $statusCode — $_"
+    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/message)" -Success $false `
+        -Detail "HTTP $statusCode - $_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 4: Echo Endpoint — Missing Message Field (expect 400)
+# TEST 4: Message Endpoint - Missing Message Field (expect 400)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl  = "$BaseUrl/echo"
+    $msgUrl  = "$BaseUrl/message"
     $jsonBody = @{ notmessage = "oops" } | ConvertTo-Json
 
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method      = "POST"
     $webRequest.ContentType = "application/json"
     $webRequest.Timeout     = 30000
@@ -275,40 +330,43 @@ try {
     $stream.Write($bodyBytes, 0, $bodyBytes.Length)
     $stream.Close()
 
-    # Expect a 400 — GetResponse() will throw on non-2xx
+    # Expect a 400 - GetResponse() will throw on non-2xx
     try {
         $webResponse = $webRequest.GetResponse()
         $webResponse.Close()
-        # If we get here, 2xx was returned — that's wrong
-        Write-TestResult -TestName "Echo — Missing Message (expect 400)" -Success $false `
+        # If we get here, 2xx was returned - that's wrong
+        Write-TestResult -TestName "Message - Missing Field (expect 400)" -Success $false `
             -Detail "Expected 400 but received 2xx"
     }
     catch [System.Net.WebException] {
         $errResponse = $_.Exception.Response
+        if ($null -eq $errResponse) {
+            throw  # Re-throw to outer catch for connection-level errors
+        }
         $errStatusCode = [int]$errResponse.StatusCode
         $errReader = New-Object System.IO.StreamReader($errResponse.GetResponseStream())
         $errBody   = $errReader.ReadToEnd() | ConvertFrom-Json
         $errReader.Close()
 
         $validationOk = ($errStatusCode -eq 400) -and ($errBody.error.code -eq "INVALID_REQUEST")
-        Write-TestResult -TestName "Echo — Missing Message (expect 400)" -Success $validationOk `
+        Write-TestResult -TestName "Message - Missing Field (expect 400)" -Success $validationOk `
             -Detail "HTTP $errStatusCode, code=$($errBody.error.code)"
     }
 }
 catch {
-    Write-TestResult -TestName "Echo — Missing Message (expect 400)" -Success $false `
+    Write-TestResult -TestName "Message - Missing Field (expect 400)" -Success $false `
         -Detail "$_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 5: Echo Endpoint — Empty Message (expect 400)
+# TEST 5: Message Endpoint - Empty Message (expect 400)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl  = "$BaseUrl/echo"
+    $msgUrl  = "$BaseUrl/message"
     $jsonBody = @{ message = "   " } | ConvertTo-Json
 
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method      = "POST"
     $webRequest.ContentType = "application/json"
     $webRequest.Timeout     = 30000
@@ -322,35 +380,38 @@ try {
     try {
         $webResponse = $webRequest.GetResponse()
         $webResponse.Close()
-        Write-TestResult -TestName "Echo — Empty/Whitespace Message (expect 400)" -Success $false `
+        Write-TestResult -TestName "Message - Empty/Whitespace (expect 400)" -Success $false `
             -Detail "Expected 400 but received 2xx"
     }
     catch [System.Net.WebException] {
         $errResponse   = $_.Exception.Response
+        if ($null -eq $errResponse) {
+            throw  # Re-throw to outer catch for connection-level errors
+        }
         $errStatusCode = [int]$errResponse.StatusCode
         $errReader     = New-Object System.IO.StreamReader($errResponse.GetResponseStream())
         $errBody       = $errReader.ReadToEnd() | ConvertFrom-Json
         $errReader.Close()
 
         $validationOk = ($errStatusCode -eq 400) -and ($errBody.error.code -eq "INVALID_REQUEST")
-        Write-TestResult -TestName "Echo — Empty/Whitespace Message (expect 400)" -Success $validationOk `
+        Write-TestResult -TestName "Message - Empty/Whitespace (expect 400)" -Success $validationOk `
             -Detail "HTTP $errStatusCode, code=$($errBody.error.code)"
     }
 }
 catch {
-    Write-TestResult -TestName "Echo — Empty/Whitespace Message (expect 400)" -Success $false `
+    Write-TestResult -TestName "Message - Empty/Whitespace (expect 400)" -Success $false `
         -Detail "$_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 6: Echo Endpoint — Malformed JSON (expect 400)
+# TEST 6: Message Endpoint - Malformed JSON (expect 400)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl  = "$BaseUrl/echo"
+    $msgUrl  = "$BaseUrl/message"
     $rawBody  = "this is not json"
 
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method      = "POST"
     $webRequest.ContentType = "application/json"
     $webRequest.Timeout     = 30000
@@ -364,36 +425,39 @@ try {
     try {
         $webResponse = $webRequest.GetResponse()
         $webResponse.Close()
-        Write-TestResult -TestName "Echo — Malformed JSON (expect 400)" -Success $false `
+        Write-TestResult -TestName "Message - Malformed JSON (expect 400)" -Success $false `
             -Detail "Expected 400 but received 2xx"
     }
     catch [System.Net.WebException] {
         $errResponse   = $_.Exception.Response
+        if ($null -eq $errResponse) {
+            throw  # Re-throw to outer catch for connection-level errors
+        }
         $errStatusCode = [int]$errResponse.StatusCode
         $errReader     = New-Object System.IO.StreamReader($errResponse.GetResponseStream())
         $errBody       = $errReader.ReadToEnd() | ConvertFrom-Json
         $errReader.Close()
 
         $malformedOk = ($errStatusCode -eq 400) -and ($errBody.error.code -eq "MALFORMED_JSON")
-        Write-TestResult -TestName "Echo — Malformed JSON (expect 400)" -Success $malformedOk `
+        Write-TestResult -TestName "Message - Malformed JSON (expect 400)" -Success $malformedOk `
             -Detail "HTTP $errStatusCode, code=$($errBody.error.code)"
     }
 }
 catch {
-    Write-TestResult -TestName "Echo — Malformed JSON (expect 400)" -Success $false `
+    Write-TestResult -TestName "Message - Malformed JSON (expect 400)" -Success $false `
         -Detail "$_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 7: Echo Endpoint — No Client Certificate (expect 403)
+# TEST 7: Message Endpoint - No Client Certificate (expect 401/403)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl  = "$BaseUrl/echo"
+    $msgUrl  = "$BaseUrl/message"
     $jsonBody = @{ message = "should be rejected" } | ConvertTo-Json
 
     # Deliberately omit client certificate
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method      = "POST"
     $webRequest.ContentType = "application/json"
     $webRequest.Timeout     = 30000
@@ -408,34 +472,39 @@ try {
         $webResponse = $webRequest.GetResponse()
         $respStatusCode = [int]$webResponse.StatusCode
         $webResponse.Close()
-        # APIM should reject with 403 — if we get 200, mTLS is not enforced
-        Write-TestResult -TestName "Echo — No Client Cert (expect 403)" -Success $false `
-            -Detail "Expected 403 but received $respStatusCode — mTLS may not be enforced"
+        # APIM should reject with 401/403 - if we get 200, mTLS is not enforced
+        Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $false `
+            -Detail "Expected 401/403 but received $respStatusCode - mTLS may not be enforced"
     }
     catch [System.Net.WebException] {
         $errResponse   = $_.Exception.Response
+        if ($null -eq $errResponse) {
+            throw  # Re-throw to outer catch for connection-level errors
+        }
         $errStatusCode = [int]$errResponse.StatusCode
-        $noCertOk      = ($errStatusCode -eq 403)
-        Write-TestResult -TestName "Echo — No Client Cert (expect 403)" -Success $noCertOk `
-            -Detail "HTTP $errStatusCode (expected 403)"
+        # APIM validate-client-certificate returns 401 (ClientCertificateNotFound),
+        # but 403 is also acceptable if the policy changes.
+        $noCertOk      = ($errStatusCode -eq 401 -or $errStatusCode -eq 403)
+        Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $noCertOk `
+            -Detail "HTTP $errStatusCode (expected 401 or 403)"
     }
 }
 catch {
     # Connection-level rejection (TLS handshake failure) is also acceptable
-    # — APIM may terminate the connection before returning an HTTP status.
+    # - APIM may terminate the connection before returning an HTTP status.
     $isHandshakeFailure = $_.Exception.Message -match "handshake|SSL|TLS|closed"
-    Write-TestResult -TestName "Echo — No Client Cert (expect 403)" -Success $isHandshakeFailure `
+    Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $isHandshakeFailure `
         -Detail "Connection error (acceptable if TLS handshake rejected): $_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 8: Echo Endpoint — Wrong HTTP Method (expect 405 or 404)
+# TEST 8: Message Endpoint - Wrong HTTP Method (expect 405 or 404)
 # -------------------------------------------------------------------------------
 
 try {
-    $echoUrl = "$BaseUrl/echo"
+    $msgUrl = "$BaseUrl/message"
 
-    $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+    $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
     $webRequest.Method  = "GET"
     $webRequest.Timeout = 30000
     $webRequest.ClientCertificates.Add($clientCert) | Out-Null
@@ -443,24 +512,24 @@ try {
     try {
         $webResponse = $webRequest.GetResponse()
         $webResponse.Close()
-        Write-TestResult -TestName "Echo — GET Method (expect 4xx)" -Success $false `
+        Write-TestResult -TestName "Message - GET Method (expect 4xx)" -Success $false `
             -Detail "Expected 4xx but received 2xx"
     }
     catch [System.Net.WebException] {
         $errResponse   = $_.Exception.Response
         $errStatusCode = [int]$errResponse.StatusCode
         $methodOk      = ($errStatusCode -ge 400 -and $errStatusCode -lt 500)
-        Write-TestResult -TestName "Echo — GET Method (expect 4xx)" -Success $methodOk `
+        Write-TestResult -TestName "Message - GET Method (expect 4xx)" -Success $methodOk `
             -Detail "HTTP $errStatusCode"
     }
 }
 catch {
-    Write-TestResult -TestName "Echo — GET Method (expect 4xx)" -Success $false `
+    Write-TestResult -TestName "Message - GET Method (expect 4xx)" -Success $false `
         -Detail "$_"
 }
 
 # -------------------------------------------------------------------------------
-# TEST 9: Alert Trigger — Deliberate 500s via trip_server_side_error
+# TEST 9: Alert Trigger - Deliberate 500s via trip_server_side_error
 #
 # The func_failures alert fires when requests/failed exceeds the threshold
 # (default 5) within the evaluation window (default 15 min).  We send enough
@@ -475,10 +544,10 @@ Write-Host "Sending $alertIterations deliberate 500 requests to trip failure ale
 
 for ($i = 1; $i -le $alertIterations; $i++) {
     try {
-        $echoUrl  = "$BaseUrl/echo"
+        $msgUrl  = "$BaseUrl/message"
         $jsonBody = @{ message = "alert-trigger-$i"; trip_server_side_error = $true } | ConvertTo-Json
 
-        $webRequest = [System.Net.HttpWebRequest]::Create($echoUrl)
+        $webRequest = [System.Net.HttpWebRequest]::Create($msgUrl)
         $webRequest.Method      = "POST"
         $webRequest.ContentType = "application/json"
         $webRequest.Timeout     = 30000
@@ -492,11 +561,14 @@ for ($i = 1; $i -le $alertIterations; $i++) {
         try {
             $webResponse = $webRequest.GetResponse()
             $webResponse.Close()
-            # 2xx is unexpected — the flag should have caused a 500
+            # 2xx is unexpected - the flag should have caused a 500
             $alertFailureDetails += "Iteration ${i}: Expected 500 but received 2xx"
         }
         catch [System.Net.WebException] {
             $errResponse   = $_.Exception.Response
+            if ($null -eq $errResponse) {
+                throw  # Re-throw to outer catch for connection-level errors
+            }
             $errStatusCode = [int]$errResponse.StatusCode
             $errReader     = New-Object System.IO.StreamReader($errResponse.GetResponseStream())
             $errBody       = $errReader.ReadToEnd() | ConvertFrom-Json
@@ -504,7 +576,7 @@ for ($i = 1; $i -le $alertIterations; $i++) {
 
             if ($errStatusCode -eq 500 -and $errBody.error.code -eq "DELIBERATE_ERROR") {
                 $alertSuccessCount++
-                Write-Host "  [$i/$alertIterations] HTTP 500 DELIBERATE_ERROR — OK" -ForegroundColor DarkGray
+                Write-Host "  [$i/$alertIterations] HTTP 500 DELIBERATE_ERROR - OK" -ForegroundColor DarkGray
             }
             else {
                 $alertFailureDetails += "Iteration ${i}: HTTP $errStatusCode, code=$($errBody.error.code)"
@@ -521,12 +593,12 @@ for ($i = 1; $i -le $alertIterations; $i++) {
 
 $allTripped = ($alertSuccessCount -eq $alertIterations)
 $detail     = if ($allTripped) {
-    "$alertSuccessCount/$alertIterations requests returned 500 DELIBERATE_ERROR — failure alert threshold exceeded"
+    "$alertSuccessCount/$alertIterations requests returned 500 DELIBERATE_ERROR - failure alert threshold exceeded"
 } else {
     "$alertSuccessCount/$alertIterations succeeded. Failures: $($alertFailureDetails -join '; ')"
 }
 
-Write-TestResult -TestName "Alert Trigger — Deliberate 500s ($alertIterations requests)" `
+Write-TestResult -TestName "Alert Trigger - Deliberate 500s ($alertIterations requests)" `
     -Success $allTripped -Detail $detail
 
 # -------------------------------------------------------------------------------

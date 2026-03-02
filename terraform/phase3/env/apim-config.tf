@@ -9,6 +9,21 @@
 # condition is stable across plan/apply cycles.
 
 locals {
+  api_operations = [
+    {
+      operation_id = "health-check"
+      display_name = "Health Check"
+      http_method  = "GET"
+      url_template = "/health"
+    },
+    {
+      operation_id = "post-message"
+      display_name = "Post Message"
+      http_method  = "POST"
+      url_template = "/message"
+    },
+  ]
+
   _apim_lb_when_blocks = join("\n", [for i, k in local.sorted_stamp_keys :
     join("\n", [
       "        <when condition=\"@((int)context.Variables[&quot;stamp-index&quot;] == ${i})\">",
@@ -114,11 +129,9 @@ resource "azurerm_api_management_api" "wkld" {
 }
 
 # ─── APIM — API Operations ────────────────────────────────────────────────────
-# Operations are driven by var.api_operations so they can be overridden per
-# environment without changing the Terraform source.
 
 resource "azurerm_api_management_api_operation" "wkld" {
-  for_each = { for op in var.api_operations : op.operation_id => op }
+  for_each = { for op in local.api_operations : op.operation_id => op }
 
   operation_id        = each.key
   api_name            = azurerm_api_management_api.wkld.name

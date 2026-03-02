@@ -33,34 +33,6 @@ variable "stamps" {
   }
 }
 
-# ─── APIM — API Operations ───────────────────────────────────────────────────
-# Defines the HTTP operations exposed on the workload API in APIM.
-# Override per environment in the workspace-specific .tfvars file as needed.
-
-variable "api_operations" {
-  type = list(object({
-    operation_id = string
-    display_name = string
-    http_method  = string
-    url_template = string
-  }))
-  description = "List of APIM API operations to expose on the workload API."
-
-  default = [
-    {
-      operation_id = "health-check"
-      display_name = "Health Check"
-      http_method  = "GET"
-      url_template = "/health"
-    },
-    {
-      operation_id = "post-echo"
-      display_name = "Echo"
-      http_method  = "POST"
-      url_template = "/echo"
-    },
-  ]
-}
 
 # ─── Alerting ─────────────────────────────────────────────────────────────────
 
