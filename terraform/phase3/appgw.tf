@@ -1,14 +1,14 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Application Gateway v2 — Public ingress with mTLS
+# Application Gateway v2 — Private ingress with mTLS via Private Link
 #
-# Provides a public HTTPS endpoint that terminates TLS (including mTLS client
-# certificate validation) and routes requests to the internal APIM instances
-# based on URL path.
+# The App GW is NOT Internet-facing.  All client traffic arrives through a
+# Private Endpoint (PE) in snet-shared-pe via Azure Private Link.  The PE is
+# registered as appgw.internal.contoso.com in the project private DNS zone.
 #
 # Traffic flow:
 #
-#   Client ──HTTPS+mTLS──► App GW ──HTTPS──► APIM ──HTTPS+MI──► Function App
-#                          (public)         (VNet-internal)       (PE)
+#   Client ──► PE (snet-shared-pe) ──Private Link──► App GW ──HTTPS──► APIM
+#              appgw.internal.contoso.com           (snet-appgw)   (VNet-internal)
 #
 # Path-based routing:
 #   /api/dev/*   → pool-apim-dev  (rewrite strips /dev)
@@ -22,7 +22,9 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─── Public IP ────────────────────────────────────────────────────────────────
-# Standard SKU static IP required for Application Gateway v2.
+# Standard SKU static IP required by Application Gateway v2 for management
+# health probes (GatewayManager).  No listener binds to this IP — all client
+# traffic enters via the Private Endpoint.
 
 resource "azurerm_public_ip" "appgw" {
   name                = "pip-appgw-${local.name_suffix}"
@@ -70,15 +72,34 @@ resource "azurerm_application_gateway" "this" {
   }
 
   # ── Frontend ───────────────────────────────────────────────────────────────
+  # The public IP is required by AppGW v2 but no listener binds to it.
+  # Private Link is attached to this frontend — PE traffic is SNATed through
+  # snet-appgw-pl before reaching the gateway.
 
   frontend_ip_configuration {
-    name                 = "frontend-ip"
-    public_ip_address_id = azurerm_public_ip.appgw.id
+    name                            = "frontend-ip"
+    public_ip_address_id            = azurerm_public_ip.appgw.id
+    private_link_configuration_name = "appgw-pl-config"
   }
 
   frontend_port {
     name = "https-port"
     port = 443
+  }
+
+  # ── Private Link configuration ───────────────────────────────────────────
+  # Exposes the App GW frontend via Azure Private Link.  NAT IPs are allocated
+  # in a dedicated subnet (snet-appgw-pl) separate from the gateway subnet.
+
+  private_link_configuration {
+    name = "appgw-pl-config"
+
+    ip_configuration {
+      name                          = "pl-ip-config"
+      subnet_id                     = azurerm_subnet.appgw_pl.id
+      private_ip_address_allocation = "Dynamic"
+      primary                       = true
+    }
   }
 
   # ── TLS — Server certificate ───────────────────────────────────────────────
@@ -274,5 +295,42 @@ resource "azurerm_application_gateway" "this" {
     azurerm_private_endpoint.kv,
     azurerm_role_assignment.appgw_kv_secrets,
     azurerm_subnet_network_security_group_association.appgw,
+    azurerm_subnet.appgw_pl,
   ]
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Private Endpoint — expose App GW via PE in snet-shared-pe
+#
+# Clients (jumpbox, runner) connect to the PE IP rather than the public IP.
+# The PE is registered as appgw.internal.contoso.com in the project private
+# DNS zone so all VNet resources resolve it automatically.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+resource "azurerm_private_endpoint" "appgw" {
+  name                = "pe-appgw-${local.name_suffix}"
+  resource_group_name = local.core.resource_group_core
+  location            = var.location
+  subnet_id           = local.core.subnet_ids["snet-shared-pe"]
+
+  private_service_connection {
+    name                           = "psc-appgw-${local.name_suffix}"
+    private_connection_resource_id = azurerm_application_gateway.this.id
+    subresource_names              = ["frontend-ip"]
+    is_manual_connection           = false
+  }
+
+  tags = local.tags
+}
+
+# ─── DNS — appgw.internal.contoso.com ──────────────────────────────────────
+# A record in the internal.contoso.com zone pointing to the PE NIC IP.
+# The zone is already linked to vnet-core so all subnets resolve this name.
+
+resource "azurerm_private_dns_a_record" "appgw" {
+  name                = "appgw"
+  zone_name           = "internal.contoso.com"
+  resource_group_name = local.core.resource_group_core
+  ttl                 = 300
+  records             = [azurerm_private_endpoint.appgw.private_service_connection[0].private_ip_address]
 }

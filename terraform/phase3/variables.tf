@@ -46,6 +46,17 @@ variable "appgw_subnet_cidr" {
   }
 }
 
+variable "appgw_pl_subnet_cidr" {
+  type        = string
+  default     = "10.100.131.32/28"
+  description = "CIDR block for the Application Gateway Private Link NAT subnet.  Must be separate from the AppGW subnet."
+
+  validation {
+    condition     = can(cidrhost(var.appgw_pl_subnet_cidr, 0))
+    error_message = "Must be a valid CIDR block."
+  }
+}
+
 # ─── Application Gateway ─────────────────────────────────────────────────────
 
 variable "appgw_sku" {

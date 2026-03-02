@@ -1,13 +1,17 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 3 — Application Gateway (public ingress to APIM)
+# Phase 3 — Application Gateway (private ingress to APIM via Private Link)
 #
 # This root module deploys a shared Application Gateway v2 that provides
-# public HTTPS+mTLS ingress to both dev and prod APIM instances.  It is NOT
+# private HTTPS+mTLS ingress to both dev and prod APIM instances.  It is NOT
 # workspace-driven — the gateway routes to all configured environments
 # simultaneously via URL path-based routing:
 #
-#   https://<appgw-pip>/api/dev/message  → APIM dev  → Function App (dev)
-#   https://<appgw-pip>/api/prod/health  → APIM prod → Function App (prod)
+#   https://appgw.internal.contoso.com/api/dev/message  → APIM dev  → Function App (dev)
+#   https://appgw.internal.contoso.com/api/prod/health  → APIM prod → Function App (prod)
+#
+# The App GW is NOT Internet-facing.  Clients connect through a Private
+# Endpoint (in snet-shared-pe) registered as appgw.internal.contoso.com.
+# Traffic flows: PE → Private Link NAT (snet-appgw-pl) → App GW (snet-appgw).
 #
 # Rewrite rules strip the environment segment before forwarding to APIM, so
 # APIM receives requests at its existing API path (/api/<operation>).
