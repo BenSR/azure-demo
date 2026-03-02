@@ -40,8 +40,8 @@ $StampNumber     = "1"
 
 # APIM gateway hostname (from Terraform output: apim_gateway_url)
 # Internal VNet mode - resolves to a private IP within the VNet.
-# Example: apim-wkld-shared-dev.azure-api.net
-$ApimGatewayHost = "apim-${Workload}-shared-${Environment}.azure-api.net"
+# Example: apim-wkld-shared-dev.internal.contoso.com
+$ApimGatewayHost = "apim-${Workload}-shared-${Environment}.internal.contoso.com"
 
 # APIM API path prefix (matches azurerm_api_management_api.wkld.path)
 $ApiPath         = "api"

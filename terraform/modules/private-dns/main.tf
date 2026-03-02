@@ -41,7 +41,7 @@ resource "azurerm_private_dns_zone" "websites" {
 }
 
 resource "azurerm_private_dns_zone" "apim" {
-  name                = "azure-api.net"
+  name                = "internal.contoso.com"
   resource_group_name = var.resource_group_name
   tags                = var.tags
 }

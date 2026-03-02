@@ -136,7 +136,7 @@ resource "azurerm_application_gateway" "this" {
 
   # ── Backend address pools — one per environment ─────────────────────────────
   # Each pool contains the APIM FQDN for that environment.  DNS resolves to
-  # the APIM private IP via the azure-api.net Private DNS Zone.
+  # the APIM private IP via the internal.contoso.com Private DNS Zone.
 
   dynamic "backend_address_pool" {
     for_each = toset(var.environments)

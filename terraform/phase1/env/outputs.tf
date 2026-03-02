@@ -8,8 +8,8 @@ output "environment" {
 # ─── APIM ────────────────────────────────────────────────────────────────────
 
 output "apim_gateway_url" {
-  value       = azurerm_api_management.this.gateway_url
-  description = "APIM internal gateway URL. Reachable only from within the VNet."
+  value       = "https://${local.apim_custom_hostname}"
+  description = "APIM custom gateway URL (internal.contoso.com). Reachable only from within the VNet."
 }
 
 output "apim_private_ip" {
