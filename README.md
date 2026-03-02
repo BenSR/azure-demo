@@ -93,6 +93,8 @@ This creates:
 
 The script prints the GitHub secrets and environments to configure (see [OIDC Authentication](#oidc-authentication)).
 
+![Bootstrap script output](docs/assets/prepare-azure-env-script-demo.png)
+
 ### 2. Configure GitHub
 
 Add the following as GitHub Actions repository secrets:
@@ -160,6 +162,12 @@ feature/xyz ──PR──► dev ──PR──► main
 #### Runner selection
 
 Jobs that only talk to the Azure Resource Manager API (plan/apply for Phase 1, validation) run on **GitHub-hosted** runners. Jobs that need VNet access (Phase 2+3 apply, Docker build+push, webhook deploy) run on the **self-hosted** runner inside the VNet.
+
+### Smoke Tests
+
+After deployment, end-to-end smoke tests can be run from the jump box to validate the full request path (DNS → AppGW mTLS → APIM → Function App). The test script (`scripts/Test-Application-Jumpbox.ps1`) exercises health, message, validation, mTLS enforcement, and alert-trigger endpoints for each environment.
+
+![Smoke test output](docs/assets/smoke-test.png)
 
 ---
 
