@@ -1,258 +1,150 @@
 # Solution Design
 
-Design notes and decisions as I go.
+Design decisions and rationale for the infrastructure architecture.
 
 ---
-## Workload
 
-### Multi-instance capability
+## Workload — Stamp-Based Model
 
-The spec asks for a single deployment, however we should structure things in advance of a multi-region/multi-instance ask. This can be accommodated by making the core workload components - App Service Plans, Function Apps, and supporting infra - a terraform module. This makes additional instance deployments far easier, and is a low-effort design decision to make now.
+The workload is structured as repeatable **stamps** — each stamp is a self-contained unit of compute (ASP, Function App, Storage, App Insights, Key Vault). Stamps are a Terraform module (`modules/workload-stamp`); adding a new instance is one `for_each` entry in `.tfvars`.
 
-We will refer to each instance of the workload as a "stamp" - so we will have "workload-stamp-1" for example. Each stamp will have its own ASP, Function App, Storage Account, App Insights, and **Key Vault**. The stamp is designed as a self-contained regional unit — if a region fails, only that stamp is affected; a shared KV would propagate the failure to all stamps. The shared infrastructure (APIM, ACR, VNet, observability) will be outside the stamp module. I am deliberately *NOT* going to make the ASP a shared component between stamps. This would make network isolation much harder and make multi-region impossible — so this is a design choice I am making.
+This supports multi-region scale-out without architecture changes. If a stamp fails, only that stamp is affected — a shared Key Vault was deliberately rejected to prevent cross-stamp failure propagation.
 
-### Resource Group Model
+## Resource Group Model
 
-Four resource groups per environment, each reflecting a different lifecycle and sharing boundary:
+Four resource groups per environment, each reflecting a different lifecycle:
 
-| Resource Group | Naming | What lives here |
-|----------------|--------|----------------|
-| `rg-core-deploy` | No env | **Manually created** before first `terraform init`. Holds the state storage account for all Terraform roots (`phase1/core`, `phase1/env`, `phase3`). Not managed by Terraform. |
-| `rg-core` | No env, no workload prefix | **Cross-environment core platform**: ACR, Log Analytics, VNet, NSGs, NAT GW, Private DNS zones, Jump box. Deployed **once**, shared across all environments — resources here carry no env suffix. |
-| `rg-wkld-shared-<env>` | Per-env | **Per-environment shared**: APIM only (Key Vault has moved into each stamp). Shared front door, differs by environment. |
-| `rg-wkld-stamp-<N>-<env>` | Per-stamp, per-env | **Per-stamp compute**: ASP, Function App(s), Storage Account, App Insights, Key Vault, stamp-scoped Private Endpoints. One RG per stamp × per environment. |
+| Resource Group | Scope | Contents |
+|----------------|-------|----------|
+| `rg-core-deploy` | Manual, pre-Terraform | State storage account |
+| `rg-core` | Cross-environment | ACR, VNet, NSGs, NAT GW, DNS zones, Log Analytics, Jump box, Runner |
+| `rg-wkld-shared-<env>` | Per-environment | APIM |
+| `rg-wkld-stamp-<N>-<env>` | Per-stamp, per-env | ASP, Function App, Storage, App Insights, Key Vault, PEs |
 
-The `phase1/env` workspace (`dev`, `prod`) owns its own complete set of per-environment resources. Core resources in `rg-core` are shared and workspace-independent.
+## Environment Strategy
 
-### Environment Strategy — Terraform Workspaces
+Terraform workspaces drive `phase1/env` and `phase2/env` only. `phase1/core` is deployed once and is environment-agnostic. `phase3` (Application Gateway) is also deployed once — it routes to all environments via URL path-based routing.
 
-**Terraform workspaces apply to `phase1/env/` and `phase3/` only.** The `phase1/core/` root is deployed once without workspace selection — it is environment-agnostic. Core outputs (subnet IDs, ACR details, LAW ID, DNS zone IDs) are consumed by `phase1/env/` and `phase3/` via remote state.
+Core outputs (subnet IDs, ACR details, DNS zone IDs) are consumed downstream via `terraform_remote_state`. The `default` workspace maps to `dev` as a safety net.
 
-```
-# phase1/env — workspace-driven
-terraform workspace select dev   → deploys dev APIM + stamp layer
-terraform workspace select prod  → deploys prod APIM + stamp layer
-```
+## Multi-Stamp Support
 
-Environment-specific stamp definitions live in per-workspace `.tfvars` files (`dev.tfvars`, `prod.tfvars`). Shared configuration (subscription ID, location, APIM publisher) remains in `terraform.tfvars`.
+Stamps are defined in two places:
 
-The built-in `default` workspace maps to `dev` as a safety net — an unconfigured workspace never silently targets production.
+- **`phase1/core/terraform.tfvars`** — subnet CIDRs for every stamp across all environments. The VNet module creates each subnet pair.
+- **`phase1/env/<env>.tfvars`** — stamp runtime definitions (image, location). Subnet IDs are resolved from core remote state by naming convention.
 
-`phase1/core/` uses a single `terraform.tfvars` with all environments' stamp subnet CIDRs declared together. This is what allows a single shared VNet to host subnets for all environments simultaneously.
+NSG rules for stamp subnets are generated dynamically via `for_each` in the `workload-stamp-subnet` module — adding a stamp auto-generates all firewall rules with collision-safe priority offsets.
 
-### Multi-Stamp Support
+## Compute
 
-Stamp definitions are split across two root modules:
+Python HTTP-triggered Function App, packaged as a Docker container, hosted on a Linux App Service Plan (B1 SKU, overridden from the module default of P1v3 for cost efficiency). Each stamp can run multiple functions on one plan — cheaper, and networking is simpler since the whole plan shares one VNet integration.
 
-**`phase1/core/terraform.tfvars`** — declares all environments' subnet CIDRs in a single flat list. Adding a stamp requires an entry here so the VNet module creates the subnet pair:
+Health monitoring via App Insights availability tests against a health endpoint, plus alert rules on 5xx error rate.
 
-```hcl
-stamp_subnets = [
-  { environment = "dev",  stamp_name = "1", subnet_pe_cidr = "10.100.0.0/24", subnet_asp_cidr = "10.100.1.0/24" },
-  { environment = "dev",  stamp_name = "2", subnet_pe_cidr = "10.100.2.0/24", subnet_asp_cidr = "10.100.3.0/24" },
-  { environment = "prod", stamp_name = "1", subnet_pe_cidr = "10.100.6.0/24", subnet_asp_cidr = "10.100.7.0/24" },
-]
-```
+## API Management
 
-**`phase1/env/dev.tfvars`** — declares the workload stamps for that env (image, location). These reference the subnet pairs created above by name convention (`snet-stamp-dev-<N>-pe/asp`):
+APIM sits outside the stamp module — it's a shared front door, not per-instance. Internal VNet mode, Developer tier, in a delegated subnet. APIM uses a custom domain (`internal.contoso.com`) with a certificate signed by the project CA. A private DNS zone resolves the APIM hostname to its private IP within the VNet.
 
-```hcl
-stamps = [
-  { stamp_name = "1", location = "northeurope", image_name = "wkld-api", image_tag = "latest" },
-  { stamp_name = "2", location = "northeurope", image_name = "wkld-api", image_tag = "latest" },
-]
-```
+APIM authenticates to Function App backends using Managed Identity + Entra ID tokens. The API policy includes random stamp load-balancing and per-stamp backend routing.
 
-NSG rules for stamp subnets and cross-cutting rules (on APIM, shared-PE, runner, jumpbox NSGs) are generated dynamically using `for_each` inside the `modules/workload-stamp-subnet` module, so adding a stamp automatically produces the correct firewall rules.
+## Application Gateway (Phase 3)
 
-### Function App / App Service Plan
+An Application Gateway (Standard_v2) provides **public ingress with mTLS termination**. It sits in its own subnet and routes `/api/<env>/*` to the appropriate environment's APIM instance using URL path-based routing with rewrite rules that strip the environment prefix.
 
-Python HTTP-triggered app, packaged as a Docker container, hosted on a Linux App Service Plan. Module takes a map of container definitions — can run multiple functions on one plan. Cheaper, and networking is simpler since the whole plan shares one VNet integration. ASP SKU is **B1** (overridden from the module default of P1v3 for cost efficiency in this assessment).
+The App GW enforces client certificate validation against the project CA. A self-signed server cert is stored in a dedicated Key Vault (`kv-appgw-core`), accessed by a User-Assigned Managed Identity.
 
-Input validation, error handling, response shape (message, timestamp, request ID) — all straightforward. The real challenge is making sure the Function App can talk to its dependencies (Storage, Key Vault, ACR) over private networking. Managed Identity + Private Endpoints should handle that.
+## Container Registry
 
-Health monitoring: App Insights availability test against a health endpoint. Alert rules off that plus 5xx error rate.
-
-
-## API Management (APIM)
-
-APIM lives outside the workload module — shared component, not per-instance. Multiple Function App instances? Balance across them via APIM. One APIM, many backends. Also a clean place to terminate mTLS, enforce policies, centralise request logging. Developer tier for this assessment; pattern stays the same at higher tiers.
-
-Own subnet, delegated to `Microsoft.ApiManagement/service`, internal mode only. No public endpoint. VNet clients → APIM → Function App backends.
-
-
-## Container Registry (ACR)
-
-I need an ACR to host the Function App build image. It will be a Python-based app, built into a Docker container. The ACR will need to be behind a Private Endpoint — so a self-hosted runner VM inside the VNet will be needed to connect to it. I'll also need to make sure the Service Principal used by GitHub Actions and the Function App Managed Identity have the relevant permissions. The ACR name uses an 8-character hex prefix derived from the subscription ID for global uniqueness (e.g. `acrcore09d0073b`).
-
+Premium SKU ACR (required for Private Endpoint support), behind a PE in the shared-PE subnet. A self-hosted runner VM inside the VNet handles image pushes. The ACR name uses a subscription-ID hex prefix for global uniqueness.
 
 ## Networking
 
-Networking is going to be a key feature of this design. The requirement for Private Endpoints also brings a requirement to do private DNS etc. I will keep all the networking componentry outside of the core workload components as they are separate concerns.
-
 ### VNet Design
 
-A single shared VNet (`vnet-core`, `10.100.0.0/16`) hosts all environments. This avoids per-environment VNet management complexity and enables a simple, auditable egress model. Subnets for different environments co-exist in the same VNet, distinguished by environment in the subnet name (`snet-stamp-<env>-<N>-pe`).
+A single shared VNet (a `/16`) hosts all environments. Fixed shared subnets occupy the upper address range; stamp subnets are allocated sequentially in the lower range. This avoids per-environment VNet management complexity.
 
-The `/16` (65,536 IPs) provides ample room for many stamps across all environments. Fixed shared subnets occupy the upper range (`10.100.128.0+`); stamp subnets occupy the lower range sequentially.
+**Fixed subnets** (4, created by `modules/vnet`):
 
-Two categories of subnets:
+| Subnet | Delegation | Purpose |
+|--------|-----------|---------|
+| Runner | None | Self-hosted GitHub Actions runner. NAT GW for internet egress. |
+| Jumpbox | None | Windows 11 diagnostic VM. |
+| APIM | `Microsoft.ApiManagement/service` | Internal VNet mode API Management. |
+| Shared PE | None | Private Endpoints for shared resources (ACR). |
 
-**Fixed shared subnets** (one per VNet, created by `modules/vnet`):
-- **`snet-apim`** — delegated to `Microsoft.ApiManagement/service` for the internal-mode APIM.
-- **`snet-shared-pe`** — Private Endpoints for shared resources (ACR). No delegation.
-- **`snet-runner`** — self-hosted runner VM (`vm-runner-core`). No delegation. NAT Gateway attached for internet egress.
-- **`snet-jumpbox`** — Windows 11 jump box VM. No delegation.
+**Per-stamp subnets** (2 per stamp per env, created by `modules/workload-stamp-subnet`):
 
-**Per-stamp subnets** (one pair per stamp per env, created by `modules/workload-stamp-subnet`):
-- **`snet-stamp-<env>-<N>-pe`** — Private Endpoints for stamp resources (Function App, Storage, Key Vault). PE network policies enabled.
-- **`snet-stamp-<env>-<N>-asp`** — delegated to `Microsoft.Web/serverFarms` for Function App VNet integration.
+| Subnet | Delegation | Purpose |
+|--------|-----------|---------|
+| PE | None | PEs for Function App, Storage (×4 services), Key Vault. PE network policies enabled. |
+| ASP | `Microsoft.Web/serverFarms` | Function App VNet integration (outbound traffic). |
 
-VNet module takes an array of subnet objects. Stamp subnets are created by a separate `workload-stamp-subnet` module which also manages their NSGs and all NSG rules.
+**Phase 3 subnet** (created directly by `phase3/network.tf`):
+
+| Subnet | Purpose |
+|--------|---------|
+| App GW | Application Gateway with internet ingress and outbound to APIM. |
 
 ### Private DNS
 
-Every PaaS service behind a Private Endpoint needs a Private DNS Zone linked to the VNet — Key Vault (`privatelink.vaultcore.azure.net`), Storage (`privatelink.blob.core.windows.net`, etc.), ACR (`privatelink.azurecr.io`), Function App (`privatelink.azurewebsites.net`). An additional `azure-api.net` zone is created for APIM internal VNet mode so the APIM gateway hostname resolves to its private IP within the VNet. Stand these up in Phase 1. Total: 8 Private DNS Zones.
+Eight Private DNS Zones linked to the VNet — seven `privatelink.*` zones covering Key Vault, Storage (blob/file/table/queue), ACR, and Function App, plus `internal.contoso.com` for APIM custom domain resolution.
 
 ### NSGs
 
-One NSG per subnet. Deny all inbound by default, open only what's needed (HTTPS between subnets, outbound to Azure services). Log denied flows to Log Analytics.
-
+One NSG per subnet. Deny-all inbound by default, explicit allow rules per documented traffic flows. Only the runner and jumpbox subnets permit internet egress — all others deny it at the NSG level despite NAT Gateway being attached to all subnets.
 
 ## Developer Connectivity — Jump Box
 
-To debug and validate the deployed environment, I need a way to connect into the VNet and reach private resources (APIM, Private Endpoints, etc.). The two main options are:
+A Windows 11 VM with a public IP for RDP, authenticated via Entra ID (`AADLoginForWindows` extension). It sits inside the VNet and automatically resolves private DNS records — no VPN Gateway or DNS Resolver needed.
 
-1. **VPN Gateway** — Azure Point-to-Site VPN. Clean solution, but requires a Private DNS Resolver or a DNS server VM to resolve the Azure Private DNS Zones from the VPN client. This adds significant complexity and cost (VPN Gateway + DNS Resolver) that is outside the scope of this assessment.
-2. **Jump Box VM** — A small Windows 11 VM with a public IP, sitting in its own subnet inside the VNet. Because it is *inside* the VNet, it automatically resolves Private DNS Zone records via Azure DNS (`168.63.129.16`) with no additional infrastructure. Connect via RDP, authenticated through Entra ID (AADLoginForWindows extension).
+A Custom Script Extension provisions Azure CLI, Git, and an end-to-end test script (`Test-Application-Jumpbox.ps1`) that validates mTLS, DNS resolution, and API responses from inside the VNet.
 
-I am choosing the **jump box** approach. It is simpler, cheaper, and avoids the DNS resolver dependency entirely. In a production environment, Azure Bastion would replace the public IP + RDP pattern — but Bastion is outside scope here.
-
-The VM will be:
-- **OS:** Windows 11, small SKU (e.g., `Standard_B2s`).
-- **Authentication:** Entra ID login via the `AADLoginForWindows` VM extension. Random local admin password (retrievable via `scripts/get-jumpbox-creds.sh`).
-- **Public IP:** Static Standard SKU, used for RDP access.
-- **Subnet:** Dedicated `snet-jumpbox` subnet with an NSG allowing inbound RDP (3389) from the internet and outbound HTTPS to the VNet's PE subnets.
-- **No NAT Gateway** — the jump box does not need general internet egress; it is a diagnostic tool for reaching internal resources.
-
+In production, Azure Bastion would replace the public IP + RDP pattern.
 
 ## Certificate Management & mTLS
 
-Use Terraform `tls` provider to generate a self-signed CA + client cert signed by it. Store both in Key Vault. Configure APIM to trust only my CA as the client cert truststore — clients need a cert I've signed. Makes sense since APIM is already the front door; mTLS terminates there, Function App backends don't need to know about client certs. No external dependencies, demonstrates the pattern without buying a real CA.
+Terraform's `tls` provider generates a self-signed CA and a client cert signed by it. Phase 2 writes both to each stamp's Key Vault via the VNet runner.
 
+mTLS is enforced at two levels:
+
+1. **Application Gateway** — validates client certificates against the CA as a trusted root. An SSL profile enforces mTLS on the HTTPS listener.
+2. **APIM** — can additionally validate the client cert thumbprint via a Named Value (useful when App GW is bypassed for internal VNet testing via the jumpbox).
 
 ## Observability
 
-- **App Insights** on the Function App — tracing, dependency tracking, live metrics.
-- **Log Analytics Workspace** — central sink, everything goes here.
-- **Diagnostic settings** on Function Apps and Key Vaults, streaming to Log Analytics.
-- **NSG flow logs** — disabled. Azure blocked new NSG flow log creation from June 2025; the `flow_logs_enabled` flag is set to `false`. No diagnostic storage account (`stdiagcore`) is created.
-- **Alert rule** on 5xx error rate — practical, easy to demo.
-
+- **App Insights** per stamp — workspace-based, backed by shared Log Analytics (`law-core`). OpenTelemetry integration via `azure-monitor-opentelemetry`.
+- **Diagnostic settings** on all resources: Function App, Key Vault, APIM, ACR, Log Analytics, Storage (all 4 services).
+- **NSG flow logs** — disabled (Azure blocked new creation from June 2025; flag retained for future re-enablement).
+- **Alert rules** — 5xx error rate (metric + KQL scheduled query), availability percentage. Action group with email receivers. Thresholds are environment-specific.
+- **Availability web tests** — per stamp against health endpoint via APIM. Disabled by default (APIM is internal-only); enabled once App GW provides a public path.
 
 ## Identity & Permissions
 
-- **Service Principal** — created by `prepare-azure-env.sh` bootstrap script with OIDC federated credentials for GitHub Actions. Owner on subscription + Application Developer + Directory Readers directory roles + MS Graph Application.ReadWrite.All.
-- **Managed Identities** on Function App — ACR pull, Key Vault access, Storage. No shared secrets.
-- **Entra ID app registrations** per stamp — used as token audiences for EasyAuth (APIM MI authenticates to Function App via Entra tokens).
+- **Service Principal** — OIDC federated credentials for GitHub Actions (no long-lived secrets).
+- **Managed Identities** — System-assigned on Function App (ACR pull, KV read, Storage access) and APIM (KV cert read, Entra ID token acquisition). User-assigned on App GW (KV cert access).
+- **Entra ID app registrations** — one per stamp per env, used as token audiences for EasyAuth.
 
-
-## Two-stage (really three-stage) deployment
-
-Can't do everything in one `terraform apply` — networking chicken-and-egg.
+## Three-Phase Deployment
 
 ### Phase 1 — Bootstrap (GitHub-hosted runner)
 
-Split into two independent root modules within `phase1/`:
+Split into two root modules:
 
-**`phase1/core/`** — foundational infra (rarely changes):
-- Resource Groups (core only)
-- VNet + subnets + NSGs
-- Private DNS Zones (8 zones: 7 privatelink + `azure-api.net`)
-- ACR (with Private Endpoint)
-- Log Analytics
-- NAT Gateway (attached to all subnets; NSGs control egress) + Jump Box + Self-Hosted Runner
-- TLS cert generation (CA + client cert)
-- CI/CD Identity detection (`data.azurerm_client_config`)
+**`phase1/core/`** — foundational infra (deployed once): Resource Groups, VNet + subnets + NSGs, Private DNS (8 zones), ACR + PE, Log Analytics, NAT Gateway, Jump Box, Self-Hosted Runner, TLS cert generation.
 
-**`phase1/env/`** — workload layer (changes more often, reads `core/` via remote state):
-- Resource Groups (shared + stamp)
-- APIM (internal mode, in its own subnet) + Private DNS A record in `azure-api.net`
-- Entra ID app registrations (one per stamp per env)
-- Module call: `modules/workload-stamp` per stamp — ASP (B1), Function App(s), Storage Account, **Key Vault**, App Insights, all PEs, role assignments
+**`phase1/env/`** — workload layer (workspace-driven, reads core via remote state): Resource Groups, APIM (internal mode, custom domain), Entra ID app registrations, Workload stamps (ASP, Function App, Storage, Key Vault, App Insights, PEs, role assignments).
 
-### Phase 2 — Runner Registration (Automated via Custom Script Extension)
+### Phase 2 — Private Data-Plane Ops (self-hosted runner)
 
-The runner VM (`vm-runner-core`) is provisioned by Terraform in Phase 1 and automatically configured via a Custom Script Extension that runs `setup-runner.sh`. This script installs Docker, Azure CLI, Node.js 20, downloads the GitHub Actions runner agent, exchanges a `RUNNER_MANAGEMENT_PAT` for a short-lived registration token, and registers the runner with the `self-hosted,linux` label set. The runner agent runs as a systemd service.
-
-### Phase 3 — Private data-plane ops (self-hosted runner)
-
-Phase 3 lives at `terraform/phase3/env/`, is workspace-driven (like `phase1/env/`), and reads remote state from both `phase1/core/` and `phase1/env/`:
+`phase2/env/` is workspace-driven  and reads remote state from both `phase1/core` and `phase1/env`. Runs from the VNet runner to reach private endpoints.
 
 | File | Purpose |
 |------|---------|
-| `main.tf` | Provider config (`azurerm` + `azuread`), backend, remote state for both `core` and `env`. Environment derived from workspace. |
-| `secrets.tf` | Writes the CA certificate, client certificate, client private key, and Kudu container deployment webhook URLs into each stamp’s Key Vault. Requires data-plane access — only possible from inside the VNet. |
-| `apim-config.tf` | Creates APIM named value (client cert thumbprint), backends (one per stamp's Function App PE), API definition, operations (GET /health, POST /message), and the mTLS client-certificate validation + Managed Identity token acquisition policy using round-robin stamp selection via `Random.Next()`. Health check operation has a separate policy that bypasses mTLS and MI auth. |
-| `alerts.tf` | Monitor metric alerts (5xx rate, availability test failures), App Insights standard web tests against the Function App health endpoint via APIM, and the shared Action Group (email/webhook). Alert thresholds are environment-specific (dev: 10 failures / 95% availability; prod: 3 failures / 99.9% availability). |
-| `variables.tf` | Shared variables: subscription, tenant, location, state account name, per-env tuning (alert thresholds, test probe frequency). |
-| `outputs.tf` | APIM gateway URL, alert rule IDs, web test IDs. |
+| `secrets.tf` | Writes CA cert, client cert/key, and deploy webhook URLs into each stamp's Key Vault |
+| `apim-config.tf` | APIM backends (per stamp), API definition, operations, load-balancing policy with MI auth |
+| `alerts.tf` | Metric alerts, KQL scheduled queries, availability web tests, action groups |
 
-#### Why not one apply?
+### Phase 3 — Application Gateway (not workspace-driven)
 
-Terraform tries to `ListKeys` / list blob containers on Storage Accounts during `plan`. Network rules locked down + runner outside VNet = 403 — Terraform stops planning. So: Phase 1 sets up networking + runner, Phase 3 only runs from inside the VNet where those calls work. Certificate data-plane writes to Key Vault also require VNet access.
-
-
-## Repo Layout
-
-The phased + workspace approach informs the directory structure:
-
-```
-terraform/
-  modules/
-    private-dns/           # 7 Private DNS zones + named ID outputs
-    vnet/                  # VNet + fixed subnets + NSGs + DNS links + flow logs
-    workload-stamp/        # ASP + Function App + Storage + Key Vault + App Insights + PEs + role assignments
-    workload-stamp-subnet/ # Per-stamp subnet pair (PE + ASP) + NSGs + all NSG rules (stamp + cross-cutting)
-  phase1/
-    core/          # Foundational infra — deployed ONCE, not workspace-driven
-                   # Shared across all environments; runs on GitHub-hosted runner
-      terraform.tfvars    # All values: subscription, location, jump box, ALL stamp_subnets across all envs
-    env/           # Workload layer (APIM, stamps) — workspace-driven (dev/prod)
-                   # Reads core/ outputs via remote_state; runs on GitHub-hosted runner
-      terraform.tfvars    # Shared values (subscription, location, APIM publisher)
-      dev.tfvars          # dev stamps: stamp_name, image, location
-      prod.tfvars         # prod stamps
-  phase3/
-    env/             # Private data-plane ops — workspace-driven (dev/prod)
-                     # Runs on self-hosted runner VM
-      main.tf             # Provider config + remote state (reads core + env outputs)
-      secrets.tf          # CA cert, client cert, client key, webhook URL writes to per-stamp KVs
-      apim-config.tf      # APIM backends, API, operations, mTLS + MI auth policy
-      alerts.tf           # Monitor metric alerts, action groups
-      variables.tf
-      outputs.tf
-      terraform.tfvars    # Shared values (subscription, location, state account)
-      dev.tfvars
-      prod.tfvars
-```
-
-**State topology:** All three roots store state in the same `rg-core-deploy` storage account (container: `tfstate`). Keys: `phase1-core.tfstate` (single, no workspace), `env:/dev/phase1-env.tfstate` (per workspace), `env:/dev/phase3.tfstate` (per workspace). `phase1/env/` and `phase3/env/` read `phase1/core/` outputs via `terraform_remote_state`; `phase3/env/` additionally reads `phase1/env/` outputs.
-
-
-## CI/CD Pipeline
-
-Eight GitHub Actions workflows (`infra-validate`, `infra-core-dev`, `infra-core-prod`, `infra-workload-dev`, `infra-workload-prod`, `app-pr`, `app-dev`, `app-prod`) mirror the phased deployment:
-
-1. **Validate** (`infra-validate.yml`) — `fmt -check` + `tflint` + `validate` on all phases. Triggers on feature branch pushes and PRs.
-2. **Core infra** — plan-only on dev merge (`infra-core-dev`), plan → approval → apply on main merge (`infra-core-prod`).
-3. **Workload infra** — sequential phase1/env then phase3/env. Auto-apply on dev (`infra-workload-dev`), TWO separate approval gates on prod (`infra-workload-prod`).
-4. **App** — test + build-check on PRs (`app-pr`), test + build + push + webhook deploy on dev (`app-dev`), test + build + push → approval → webhook deploy on prod (`app-prod`).
-
-Deployment uses Kudu container deployment webhooks (stored in Key Vault) rather than `az functionapp restart`, which ensures the Function App actually pulls the latest image digest.
-
-OIDC federation = no stored secrets in GitHub. SP trusts tokens from repo branch/environment. Additional secret: `RUNNER_MANAGEMENT_PAT` (GitHub PAT for runner registration).
-
----
-
-*Updated to reflect actual implementation.*
+`phase3/` is a flat root module that reads remote state from core and both env workspaces simultaneously. Deploys the Application Gateway (Standard_v2) with public IP, mTLS SSL profile, URL path-based routing per environment, dedicated subnet/NSG, dedicated Key Vault with server cert, and a User-Assigned Managed Identity.

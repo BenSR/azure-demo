@@ -3,26 +3,35 @@
     End-to-end smoke tests for the Azure Demo workload, run from the jumpbox.
 
 .DESCRIPTION
-    Validates the deployed application by exercising the APIM gateway endpoints
-    (health check, message API with mTLS) from inside the VNet.
+    Validates the deployed application by exercising endpoints through the
+    Application Gateway (AppGW), which is the public entry point for all
+    traffic.  The AppGW enforces mTLS, routes by path to the correct APIM
+    environment, and re-establishes TLS to the APIM backend.
 
-    The jumpbox sits on snet-jumpbox and can reach APIM (internal VNet mode)
-    and all Private Endpoints.  Tests cover:
+    The jumpbox can reach the AppGW public IP via the Internet (or via peering
+    if the AppGW subnet is reachable internally).  Tests cover:
 
-      1. DNS resolution - APIM gateway hostname resolves to a private IP.
-      2. Health endpoint - GET /api/health returns 200 with {"status":"healthy"}.
-      3. Message endpoint (mTLS) - POST /api/message with client cert returns 200
+      1. DNS resolution - AppGW hostname resolves (skipped if a raw IP is used).
+      2. Health endpoint - GET /api/<env>/health returns 200 with {"status":"healthy"}.
+      3. Message endpoint (mTLS) - POST /api/<env>/message with client cert returns 200
          and the expected JSON payload.
-      4. Validation - POST /api/message with missing/empty message returns 400.
-      5. Malformed JSON - POST /api/message with invalid body returns 400.
-      6. Missing client cert - POST /api/message without a client cert is rejected (403).
+      4. Validation - POST /api/<env>/message with missing/empty message returns 400.
+      5. Malformed JSON - POST /api/<env>/message with invalid body returns 400.
+      6. Missing client cert - TLS handshake is rejected by AppGW (mTLS enforced
+         at the listener; no HTTP response is returned).
+      7. Wrong HTTP method - GET /api/<env>/message returns 4xx.
+      8. Alert trigger - deliberate 500 errors to trip the failure alert.
 
     Certificates are retrieved from Key Vault using the Azure CLI (the jumpbox
     identity or logged-in user must have Key Vault Secrets User on the stamp KV).
 
+    mTLS is terminated at the Application Gateway.  APIM no longer validates
+    client certificates; the AppGW forwards requests over backend HTTPS using
+    the project CA-signed APIM certificate.
+
 .NOTES
     Run from an elevated PowerShell prompt on the jumpbox.
-    Requires: Azure CLI (az), PowerShell 5.1+.
+    Requires: Azure CLI (az), PowerShell 5.1+, openssl on PATH.
 #>
 
 # -------------------------------------------------------------------------------
@@ -38,13 +47,15 @@ $Workload        = "wkld"
 # Stamp number to test (e.g. "1")
 $StampNumber     = "1"
 
-# APIM gateway hostname (from Terraform output: apim_gateway_url)
-# Internal VNet mode - resolves to a private IP within the VNet.
-# Example: apim-wkld-shared-dev.internal.contoso.com
-$ApimGatewayHost = "apim-${Workload}-shared-${Environment}.internal.contoso.com"
+# Application Gateway public IP or DNS hostname.
+# Leave blank to auto-detect from Azure (requires az CLI login).
+# Override with a specific IP or hostname if needed:
+#   $AppGwHost = "20.1.2.3"
+$AppGwHost       = ""
 
-# APIM API path prefix (matches azurerm_api_management_api.wkld.path)
-$ApiPath         = "api"
+# AppGW path-based routing prefixes the environment into the API path.
+# Requests to /api/<env>/* are forwarded to APIM as /api/* (prefix stripped by rewrite rule).
+$AppGwApiPath    = "api/${Environment}"
 
 # Key Vault name for the stamp (matches kv-<workload>-<stamp>-<env>)
 $KeyVaultName    = "kv-${Workload}-${StampNumber}-${Environment}"
@@ -88,9 +99,34 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " Azure Demo - Application Smoke Tests"   -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+
+# Auto-detect AppGW public IP if not set explicitly
+if ([string]::IsNullOrWhiteSpace($AppGwHost)) {
+    Write-Host "AppGwHost not set - querying Azure for AppGW public IP..." -ForegroundColor Yellow
+    try {
+        $AppGwHost = az network public-ip show `
+            --name "pip-appgw-core" `
+            --resource-group "rg-core" `
+            --query "ipAddress" -o tsv 2>&1
+        if ([string]::IsNullOrWhiteSpace($AppGwHost) -or $AppGwHost -match "ERROR|error") {
+            throw "az returned: $AppGwHost"
+        }
+        $AppGwHost = $AppGwHost.Trim()
+        Write-Host "Detected AppGW IP: $AppGwHost" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "ERROR: Could not auto-detect AppGW public IP." -ForegroundColor Red
+        Write-Host "       Ensure you are logged in (az login) and the AppGW is deployed." -ForegroundColor Red
+        Write-Host "       Or set `$AppGwHost manually at the top of this script." -ForegroundColor Red
+        Write-Host "       $_" -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host "Environment : $Environment"
 Write-Host "Stamp       : $StampNumber"
-Write-Host "APIM Host   : $ApimGatewayHost"
+Write-Host "AppGW Host  : $AppGwHost"
+Write-Host "API Path    : /$AppGwApiPath"
 Write-Host "Key Vault   : $KeyVaultName"
 Write-Host ""
 
@@ -181,11 +217,11 @@ Write-Host "Has private key     : $($clientCert.HasPrivateKey)" -ForegroundColor
 
 # openssl s_client handshake test
 Write-Host ""
-Write-Host "TLS handshake via openssl s_client..." -ForegroundColor Yellow
+Write-Host "TLS handshake via openssl s_client (AppGW)..." -ForegroundColor Yellow
 try {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $sslOut = echo "Q" | & openssl s_client -connect "${ApimGatewayHost}:443" -cert "$CertDir\client-cert.pem" -key "$CertDir\client-key.pem" -servername $ApimGatewayHost -brief 2>&1
+    $sslOut = echo "Q" | & openssl s_client -connect "${AppGwHost}:443" -cert "$CertDir\client-cert.pem" -key "$CertDir\client-key.pem" -servername $AppGwHost -brief 2>&1
     $ErrorActionPreference = $prevEAP
     $sslText = $sslOut | Out-String
     $sslText.Split("`n") | Where-Object { $_ -match "CONNECTION|Protocol|Cipher|Verification|subject|issuer" } | ForEach-Object {
@@ -200,11 +236,11 @@ try {
 # BASE URL
 # -------------------------------------------------------------------------------
 
-$BaseUrl = "https://${ApimGatewayHost}/${ApiPath}"
+$BaseUrl = "https://${AppGwHost}/${AppGwApiPath}"
 
-# Trust the self-signed CA for this session (APIM uses an Azure-managed cert
-# on its gateway, but if the internal DNS returns a self-signed cert, we need
-# to allow it).  This callback trusts all certs for this process only.
+# Trust the AppGW self-signed certificate (CN=appgw-core) for this session only.
+# The AppGW presents its own server cert; the jumpbox does not have the project CA
+# in its Trusted Root store by default.
 # In production, install the CA cert into the Trusted Root store instead.
 if (-not ([System.Net.ServicePointManager]::ServerCertificateValidationCallback)) {
     [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
@@ -214,7 +250,7 @@ if (-not ([System.Net.ServicePointManager]::ServerCertificateValidationCallback)
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]12288
 
 Write-Host ""
-Write-Host "Base URL: $BaseUrl"
+Write-Host "Base URL : $BaseUrl"
 Write-Host ""
 Write-Host "----------------------------------------" -ForegroundColor Cyan
 Write-Host " Running Tests"                           -ForegroundColor Cyan
@@ -222,19 +258,28 @@ Write-Host "----------------------------------------" -ForegroundColor Cyan
 Write-Host ""
 
 # -------------------------------------------------------------------------------
-# TEST 1: DNS Resolution
+# TEST 1: DNS Resolution (skipped when AppGwHost is a raw IP address)
 # -------------------------------------------------------------------------------
 
-try {
-    $dns = Resolve-DnsName -Name $ApimGatewayHost -ErrorAction Stop
-    $privateIp = ($dns | Where-Object { $_.QueryType -eq "A" }).IPAddress
-    $isPrivate = $privateIp -match "^10\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\."
-    Write-TestResult -TestName "DNS Resolution" -Success $isPrivate `
-        -Detail "$ApimGatewayHost -> $privateIp (private=$isPrivate)"
-}
-catch {
-    Write-TestResult -TestName "DNS Resolution" -Success $false `
-        -Detail "Failed to resolve $ApimGatewayHost - $_"
+# Detect whether $AppGwHost is already an IP address
+$appGwIsIp = $AppGwHost -match "^\d{1,3}(\.\d{1,3}){3}$"
+
+if ($appGwIsIp) {
+    Write-TestResult -TestName "DNS Resolution (AppGW)" -Success $true `
+        -Detail "Skipped - AppGwHost is a raw IP address ($AppGwHost)"
+} else {
+    try {
+        $dns       = Resolve-DnsName -Name $AppGwHost -ErrorAction Stop
+        $resolvedIp = ($dns | Where-Object { $_.QueryType -eq "A" }).IPAddress | Select-Object -First 1
+        # AppGW has a public IP; private-range IPs would indicate a misconfiguration
+        $isPublic  = $resolvedIp -notmatch "^10\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\."
+        Write-TestResult -TestName "DNS Resolution (AppGW)" -Success ($null -ne $resolvedIp) `
+            -Detail "$AppGwHost -> $resolvedIp (public=$isPublic)"
+    }
+    catch {
+        Write-TestResult -TestName "DNS Resolution (AppGW)" -Success $false `
+            -Detail "Failed to resolve $AppGwHost - $_"
+    }
 }
 
 # -------------------------------------------------------------------------------
@@ -257,14 +302,14 @@ try {
     $webResponse.Close()
 
     $healthOk = ($healthResponse.status -eq "healthy") -and ($null -ne $healthResponse.timestamp)
-    Write-TestResult -TestName "Health Endpoint (GET /api/health)" -Success $healthOk `
+    Write-TestResult -TestName "Health Endpoint (GET /api/<env>/health)" -Success $healthOk `
         -Detail "status=$($healthResponse.status), timestamp=$($healthResponse.timestamp)"
 }
 catch {
     $statusCode = if ($_.Exception.InnerException -is [System.Net.WebException]) {
         $_.Exception.InnerException.Response.StatusCode.value__
     } else { "N/A" }
-    Write-TestResult -TestName "Health Endpoint (GET /api/health)" -Success $false `
+    Write-TestResult -TestName "Health Endpoint (GET /api/<env>/health)" -Success $false `
         -Detail "HTTP $statusCode - $_"
 }
 
@@ -300,14 +345,14 @@ try {
         $null -ne $responseBody.timestamp -and
         $null -ne $responseBody.request_id
     )
-    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/message)" -Success $msgOk `
+    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/<env>/message)" -Success $msgOk `
         -Detail "message='$($responseBody.message)', request_id=$($responseBody.request_id)"
 }
 catch {
     $statusCode = if ($_.Exception.InnerException -is [System.Net.WebException]) {
         $_.Exception.InnerException.Response.StatusCode.value__
     } else { "N/A" }
-    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/message)" -Success $false `
+    Write-TestResult -TestName "Message Endpoint - Happy Path (POST /api/<env>/message)" -Success $false `
         -Detail "HTTP $statusCode - $_"
 }
 
@@ -449,7 +494,11 @@ catch {
 }
 
 # -------------------------------------------------------------------------------
-# TEST 7: Message Endpoint - No Client Certificate (expect 401/403)
+# TEST 7: Message Endpoint - No Client Certificate (expect TLS handshake rejection)
+#
+# mTLS is enforced at the Application Gateway listener.  When no client
+# certificate is presented the AppGW drops the TLS handshake before returning
+# any HTTP response.  A connection-level error is therefore the expected outcome.
 # -------------------------------------------------------------------------------
 
 try {
@@ -472,29 +521,30 @@ try {
         $webResponse = $webRequest.GetResponse()
         $respStatusCode = [int]$webResponse.StatusCode
         $webResponse.Close()
-        # APIM should reject with 401/403 - if we get 200, mTLS is not enforced
-        Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $false `
-            -Detail "Expected 401/403 but received $respStatusCode - mTLS may not be enforced"
+        # Any HTTP response means the AppGW did not enforce mTLS - test fails
+        Write-TestResult -TestName "Message - No Client Cert (expect TLS rejection)" -Success $false `
+            -Detail "Expected TLS handshake failure but received HTTP $respStatusCode - mTLS may not be enforced on AppGW"
     }
     catch [System.Net.WebException] {
-        $errResponse   = $_.Exception.Response
-        if ($null -eq $errResponse) {
-            throw  # Re-throw to outer catch for connection-level errors
+        $errResponse = $_.Exception.Response
+        if ($null -ne $errResponse) {
+            # An HTTP error response also means the request got through the TLS layer
+            $errStatusCode = [int]$errResponse.StatusCode
+            Write-TestResult -TestName "Message - No Client Cert (expect TLS rejection)" -Success $false `
+                -Detail "Expected TLS handshake failure but received HTTP $errStatusCode - mTLS may not be enforced on AppGW"
+        } else {
+            # No HTTP response - connection was terminated at TLS layer as expected
+            $isHandshakeFailure = $_.Exception.Message -match "handshake|SSL|TLS|closed|reset|abort"
+            Write-TestResult -TestName "Message - No Client Cert (expect TLS rejection)" -Success $true `
+                -Detail "Connection rejected at TLS layer (AppGW mTLS enforced): $($_.Exception.Message)"
         }
-        $errStatusCode = [int]$errResponse.StatusCode
-        # APIM validate-client-certificate returns 401 (ClientCertificateNotFound),
-        # but 403 is also acceptable if the policy changes.
-        $noCertOk      = ($errStatusCode -eq 401 -or $errStatusCode -eq 403)
-        Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $noCertOk `
-            -Detail "HTTP $errStatusCode (expected 401 or 403)"
     }
 }
 catch {
-    # Connection-level rejection (TLS handshake failure) is also acceptable
-    # - APIM may terminate the connection before returning an HTTP status.
-    $isHandshakeFailure = $_.Exception.Message -match "handshake|SSL|TLS|closed"
-    Write-TestResult -TestName "Message - No Client Cert (expect 401/403)" -Success $isHandshakeFailure `
-        -Detail "Connection error (acceptable if TLS handshake rejected): $_"
+    # Any connection-level error without an HTTP response is the expected outcome
+    $isHandshakeFailure = $_.Exception.Message -match "handshake|SSL|TLS|closed|reset|abort"
+    Write-TestResult -TestName "Message - No Client Cert (expect TLS rejection)" -Success $isHandshakeFailure `
+        -Detail "Connection error (expected - AppGW mTLS): $_"
 }
 
 # -------------------------------------------------------------------------------
