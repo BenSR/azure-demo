@@ -85,6 +85,12 @@ output "client_private_key_pem" {
   description = "Client certificate private key in PEM format. Read by Phase 3 to write into Key Vault."
 }
 
+output "ca_private_key_pem" {
+  value       = tls_private_key.ca.private_key_pem
+  sensitive   = true
+  description = "CA private key PEM. Read by phase1/env to sign the APIM gateway TLS certificate for end-to-end TLS with Application Gateway."
+}
+
 output "client_cert_thumbprint" {
   value       = data.tls_certificate.client.certificates[0].sha1_fingerprint
   description = "SHA-1 thumbprint of the client certificate (hex). Used by Phase 3 APIM config for mTLS validation."

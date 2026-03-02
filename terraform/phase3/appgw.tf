@@ -7,20 +7,18 @@
 #
 # Traffic flow:
 #
-#   Client ──HTTPS+mTLS──► App GW ──HTTP──► APIM ──HTTPS+MI──► Function App
-#                          (public)        (VNet-internal)       (PE)
+#   Client ──HTTPS+mTLS──► App GW ──HTTPS──► APIM ──HTTPS+MI──► Function App
+#                          (public)         (VNet-internal)       (PE)
 #
 # Path-based routing:
 #   /api/dev/*   → pool-apim-dev  (rewrite strips /dev)
 #   /api/prod/*  → pool-apim-prod (rewrite strips /prod)
 #
-# Backend communication uses HTTP (port 80) to APIM within the VNet.
-# This avoids the complexity of trusting APIM's default self-signed cert.
-# NSGs restrict App GW → APIM traffic to port 80 from snet-appgw only.
-#
-# PRODUCTION NOTE: For end-to-end TLS, configure a custom domain on APIM
-# with a certificate signed by the project CA, then switch the backend to
-# HTTPS and add the CA cert as a trusted_root_certificate on the App GW.
+# End-to-end TLS: App GW terminates the client connection (including mTLS),
+# then re-establishes HTTPS to APIM.  APIM presents a certificate signed by
+# the project CA (configured in phase1/env); App GW verifies it against the
+# CA cert stored as trusted_root_certificate.
+# NSGs restrict App GW → APIM traffic to port 443 from snet-appgw only.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─── Public IP ────────────────────────────────────────────────────────────────
@@ -91,6 +89,16 @@ resource "azurerm_application_gateway" "this" {
     key_vault_secret_id = azurerm_key_vault_certificate.server.versionless_secret_id
   }
 
+  # ── TLS — Trusted root CA (backend certificate validation) ────────────────
+  # The same project CA is used to sign APIM's gateway certificate (configured
+  # in phase1/env).  App GW verifies the backend cert against this CA when
+  # opening the HTTPS connection to each APIM instance.
+
+  trusted_root_certificate {
+    name = "backend-ca"
+    data = nonsensitive(base64encode(local.core.ca_cert_pem))
+  }
+
   # ── TLS — Trusted client CA (mTLS) ─────────────────────────────────────────
   # The CA certificate generated in phase1/core.  Clients must present a
   # certificate signed by this CA.
@@ -139,32 +147,36 @@ resource "azurerm_application_gateway" "this" {
   }
 
   # ── Backend HTTP settings — one per environment ─────────────────────────────
-  # HTTP (port 80) to APIM.  pick_host_name_from_backend_address ensures the
-  # Host header matches the APIM FQDN so APIM routes correctly.
+  # HTTPS (port 443) to APIM.  pick_host_name_from_backend_address ensures the
+  # Host header matches the APIM FQDN so APIM routes to the right hostname
+  # configuration.  trusted_root_certificate_names links to the CA cert so
+  # App GW can verify APIM's backend certificate.
 
   dynamic "backend_http_settings" {
     for_each = toset(var.environments)
     content {
-      name                                = "apim-http-${backend_http_settings.key}"
+      name                                = "apim-https-${backend_http_settings.key}"
       cookie_based_affinity               = "Disabled"
-      port                                = 80
-      protocol                            = "Http"
+      port                                = 443
+      protocol                            = "Https"
       request_timeout                     = 30
       probe_name                          = "probe-apim-${backend_http_settings.key}"
       pick_host_name_from_backend_address = true
+      trusted_root_certificate_names      = ["backend-ca"]
     }
   }
 
   # ── Health probes — one per environment ─────────────────────────────────────
-  # HTTP GET to the APIM health endpoint.  This traverses the APIM
+  # HTTPS GET to the APIM health endpoint.  This traverses the APIM
   # health-check operation which bypasses mTLS and MI auth (configured in
-  # phase2/env/apim-config.tf).
+  # phase2/env/apim-config.tf).  The host is used as the SNI name and must
+  # match the CN/SAN on APIM's gateway certificate.
 
   dynamic "probe" {
     for_each = toset(var.environments)
     content {
       name                = "probe-apim-${probe.key}"
-      protocol            = "Http"
+      protocol            = "Https"
       host                = local.env_apim_hostnames[probe.key]
       path                = "/api/health"
       interval            = 30
@@ -198,7 +210,7 @@ resource "azurerm_application_gateway" "this" {
   url_path_map {
     name                               = "api-routing"
     default_backend_address_pool_name  = "pool-apim-${var.environments[0]}"
-    default_backend_http_settings_name = "apim-http-${var.environments[0]}"
+    default_backend_http_settings_name = "apim-https-${var.environments[0]}"
     default_rewrite_rule_set_name      = "rewrite-${var.environments[0]}"
 
     dynamic "path_rule" {
@@ -207,7 +219,7 @@ resource "azurerm_application_gateway" "this" {
         name                       = "route-${path_rule.key}"
         paths                      = ["/api/${path_rule.key}/*"]
         backend_address_pool_name  = "pool-apim-${path_rule.key}"
-        backend_http_settings_name = "apim-http-${path_rule.key}"
+        backend_http_settings_name = "apim-https-${path_rule.key}"
         rewrite_rule_set_name      = "rewrite-${path_rule.key}"
       }
     }
