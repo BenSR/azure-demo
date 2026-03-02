@@ -53,6 +53,14 @@ class TestEchoRequestModel:
         with pytest.raises(Exception):
             EchoRequest(message=123)
 
+    def test_trip_server_side_error_defaults_false(self):
+        req = EchoRequest(message="hello")
+        assert req.trip_server_side_error is False
+
+    def test_trip_server_side_error_true(self):
+        req = EchoRequest(message="hello", trip_server_side_error=True)
+        assert req.trip_server_side_error is True
+
     def test_extra_fields_ignored(self):
         req = EchoRequest(message="hello", extra="ignored")
         assert req.message == "hello"
@@ -190,6 +198,25 @@ class TestEchoEndpoint:
         data = parse_body(resp)
         # Should be a valid UUID4
         assert len(data["request_id"]) == 36
+
+    def test_trip_server_side_error_returns_500(self):
+        body = json.dumps({"message": "test", "trip_server_side_error": True}).encode()
+        req = build_request(body=body)
+        resp = echo(req)
+
+        assert resp.status_code == 500
+        data = parse_body(resp)
+        assert data["error"]["code"] == "DELIBERATE_ERROR"
+        assert "request_id" in data["error"]
+
+    def test_trip_server_side_error_false_normal_response(self):
+        body = json.dumps({"message": "test", "trip_server_side_error": False}).encode()
+        req = build_request(body=body)
+        resp = echo(req)
+
+        assert resp.status_code == 200
+        data = parse_body(resp)
+        assert data["message"] == "test"
 
 
 # ─── GET /api/health tests ───────────────────────────────────────────────────

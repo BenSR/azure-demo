@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class EchoRequest(BaseModel):
     message: str
+    trip_server_side_error: bool = False
 
     @field_validator("message")
     @classmethod
@@ -78,6 +79,18 @@ def echo(req: func.HttpRequest) -> func.HttpResponse:
             400,
             "INVALID_REQUEST",
             "Field 'message' is required and must be a non-empty string.",
+            request_id,
+        )
+
+    # Deliberate 500 facility — allows alert-rule testing without a real failure.
+    if payload.trip_server_side_error:
+        logger.error(
+            "Deliberate server-side error triggered for request %s", request_id
+        )
+        return error_response(
+            500,
+            "DELIBERATE_ERROR",
+            "Server-side error deliberately triggered via trip_server_side_error flag.",
             request_id,
         )
 
