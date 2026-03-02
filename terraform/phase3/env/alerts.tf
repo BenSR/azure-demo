@@ -26,10 +26,11 @@ resource "azurerm_monitor_action_group" "wkld" {
 # the configured threshold.
 #
 # Metric: microsoft.insights/components — requests/failed
-#   Counts requests that the Function App runtime marked as failed (typically
-#   5xx responses and unhandled exceptions).  The alert fires based on
-#   var.alert_5xx_failure_threshold (count, not a percentage) over a
-#   var.alert_5xx_window_minutes evaluation window.
+#   Counts requests where the OTel span was exported with success=false.
+#   With azure-monitor-opentelemetry, deliberate 500s set StatusCode.ERROR on
+#   the span, so this metric is now populated correctly for all 5xx paths.
+#   The alert fires based on var.alert_5xx_failure_threshold (count, not a
+#   percentage) over a var.alert_5xx_window_minutes evaluation window.
 
 resource "azurerm_monitor_metric_alert" "func_failures" {
   for_each = local.stamps_map
@@ -60,10 +61,13 @@ resource "azurerm_monitor_metric_alert" "func_failures" {
 }
 
 # ─── Scheduled Query Alert — HTTP 5xx Responses ───────────────────────────────
-# Queries the Application Insights requests table directly so the alert fires
-# on any HTTP 5xx response, regardless of whether the Functions runtime also
-# raises an exception.  This is more reliable than the metric-based
-# requests/failed alert for deliberately-returned 500s (no exception raised).
+# Belt-and-suspenders alert that queries the requests table directly for any
+# HTTP 5xx response code, independent of the success flag used by the metric
+# alert above.  With azure-monitor-opentelemetry instrumentation, deliberate
+# 500s now set the OTel span status to ERROR, so requests/failed is populated
+# correctly and the metric alert fires.  This query alert provides defence in
+# depth: it catches any 5xx that reaches the table regardless of how the span
+# status was recorded.
 #
 # Scope: Application Insights resource (workspace-based).  The KQL query runs
 # in the context of the App Insights resource and has access to the requests,

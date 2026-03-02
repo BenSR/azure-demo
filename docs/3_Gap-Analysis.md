@@ -21,6 +21,8 @@ Systematic comparison of every requirement (functional, nonfunctional, constrain
 
 **Overall:** 66 / 67 fully met (99%), 1 partially met (1%), 0 not met (0%).
 
+> **Note:** FR-10.1 / NFR-6.1 (Infrastructure Testing) have been resolved — see Gap 3 below. Summary counts above will be updated once the assessment is re-run.
+
 ---
 
 ## 1. Functional Requirements
@@ -105,7 +107,7 @@ Systematic comparison of every requirement (functional, nonfunctional, constrain
 
 | ID | Requirement | Priority | Status | Evidence / Notes |
 |----|-------------|----------|--------|------------------|
-| FR-10.1 | Automated infrastructure tests (`terraform test` or Terratest) | Stretch | **Not Met** | No `*.tftest.hcl` files, no Go test files, and no Terratest or other infrastructure testing framework found in the codebase. The only automated tests are the Python unit tests for the Function App and the end-to-end smoke test PowerShell script executed from the jumpbox. Terraform `validate` runs in CI but this only checks syntax, not resource correctness. |
+| FR-10.1 | Automated infrastructure tests (`terraform test` or Terratest) | Stretch | **Met** | `terraform test` files added for all four modules (`modules/vnet`, `modules/private-dns`, `modules/workload-stamp-subnet`, `modules/workload-stamp`). Tests use `mock_provider` so no Azure credentials are required. 30+ assertions validate naming conventions, NSG rule priorities, security-hardening attributes (public access disabled, TLS version, network default-deny), EasyAuth configuration, and role assignment counts. Tests run automatically in the `infra-validate` CI pipeline on every PR and feature branch push. See Gap 3 below. |
 
 ### FR-11: Environment Separation
 
@@ -172,7 +174,7 @@ Systematic comparison of every requirement (functional, nonfunctional, constrain
 
 | ID | Requirement | Priority | Status | Evidence / Notes |
 |----|-------------|----------|--------|------------------|
-| NFR-6.1 | Automated infrastructure tests | Stretch | **Not Met** | See FR-10.1. No `terraform test` or Terratest files present. |
+| NFR-6.1 | Automated infrastructure tests | Stretch | **Met** | See FR-10.1. `terraform test` files with mock providers deployed for all four modules. |
 
 ---
 
@@ -248,18 +250,22 @@ All deployed resources now stream diagnostic logs and metrics to the shared Log 
 
 ---
 
-### Gap 3: Infrastructure Testing (FR-10.1 / NFR-6.1 — Not Met)
+### Gap 3: Infrastructure Testing (FR-10.1 / NFR-6.1 — Resolved)
 
 **Requirement:** Include automated infrastructure tests using `terraform test` or Terratest to validate resource correctness.
 
-**Current state:** No infrastructure test files exist in the repository. Testing is limited to:
-- `terraform validate` (syntax checking only, not resource correctness)
-- Python unit tests for the Function App
-- End-to-end smoke test script (`Test-Application-Jumpbox.ps1`) — manual, run from the jumpbox
+**Previous state:** No infrastructure test files existed. Testing was limited to `terraform validate` (syntax only), Python unit tests for the Function App, and a manual end-to-end smoke test script.
 
-**Impact:** No automated verification that deployed resources match expected configurations (e.g., correct SKUs, network rules, RBAC assignments). This is a stretch goal.
+**Resolution:** Added `.tftest.hcl` unit test files for all four Terraform modules. Each test file uses `mock_provider` blocks so tests run without Azure credentials and complete in seconds.
 
-**Remediation:** Add `terraform test` files (`.tftest.hcl`) for each module, validating key properties such as subnet CIDR allocations, NSG rule counts, PE DNS zone linkage, and RBAC role assignments. Alternatively, implement Terratest (Go) for integration-level validation against a live environment.
+| Module | Test file | Key assertions |
+|--------|-----------|----------------|
+| `modules/vnet` | `tests/vnet.tftest.hcl` | VNet name/address space, one NSG per subnet, NSG naming convention (`vnet-X` → `nsg-X`), output map keys, no NAT/flow-log resources by default |
+| `modules/private-dns` | `tests/dns.tftest.hcl` | Exactly 8 DNS zones created, correct zone names for all eight services (Key Vault, Blob, File, Table, Queue, ACR, Websites, APIM), all zones in the correct resource group |
+| `modules/workload-stamp-subnet` | `tests/subnet.tftest.hcl` | Subnet naming convention (`snet-stamp-<env>-<name>-<pe\|asp>`), PE subnet has `private_endpoint_network_policies = Enabled`, ASP subnet delegated to `Microsoft.Web/serverFarms`, PE NSG deny-all-outbound at priority 4000, ASP NSG deny-internet-outbound at priority 4000, cross-cutting rule priorities offset correctly by `stamp_index`, second-stamp priority verification |
+| `modules/workload-stamp` | `tests/stamp.tftest.hcl` | Resource naming convention, storage account public access disabled and `default_action = Deny`, TLS 1.2 enforcement, Function App VNet integration and `public_network_access_enabled = false`, system-assigned Managed Identity, EasyAuth enabled with `/api/health` excluded, Key Vault RBAC + soft-delete + no public access, `storage_uses_managed_identity = true`, role assignment counts (AcrPull, Blob Owner) |
+
+Tests are integrated into the `infra-validate` CI pipeline (`infra-validate.yml`) and run automatically on every PR and feature branch push — no Azure credentials required. Each module is initialised with `-backend=false` then tested in the same job as `terraform validate`.
 
 ---
 
@@ -336,7 +342,7 @@ Complete mapping of every requirement ID to implementation evidence.
 | FR-8.3 | Met | `.github/workflows/infra-core-*.yml`, `.github/workflows/infra-workload-*.yml` |
 | FR-8.4 | Met | All deploy workflows (`azure/login@v2`, OIDC) |
 | FR-9.1 | Met | `modules/workload-stamp/identity.tf`, `phase1/env/entra.tf` |
-| FR-10.1 | Not Met | N/A (no infrastructure test files) |
+| FR-10.1 | Met | `modules/vnet/tests/vnet.tftest.hcl`, `modules/private-dns/tests/dns.tftest.hcl`, `modules/workload-stamp-subnet/tests/subnet.tftest.hcl`, `modules/workload-stamp/tests/stamp.tftest.hcl` |
 | FR-11.1 | Met | `phase1/env/dev.tfvars`, `phase1/env/prod.tfvars`, workspace strategy |
 | FR-12.1 | Met | `modules/vnet`, `modules/private-dns`, `modules/workload-stamp`, `modules/workload-stamp-subnet` |
 | NFR-1.1 | Met | All PaaS resources: `public_network_access_enabled = false` |
@@ -359,7 +365,7 @@ Complete mapping of every requirement ID to implementation evidence.
 | NFR-4.5 | Met | `.github/workflows/infra-validate.yml` |
 | NFR-5.1 | Met | Four reusable modules |
 | NFR-5.2 | Met | Terraform workspaces + `.tfvars` |
-| NFR-6.1 | Not Met | No infrastructure tests |
+| NFR-6.1 | Met | See FR-10.1 — `terraform test` with mock providers across all four modules |
 | TC-1 | Met | Three Terraform roots |
 | TC-2 | Met | `phase1/core/certificates.tf` |
 | TC-3 | Met | Self-signed CA |
@@ -391,11 +397,13 @@ The delivered solution demonstrates strong coverage of the assessment requiremen
 - **9 of 10 delivery constraints** are fully met; 1 partially met.
 - **6 of 7 stretch goals** are fully met; the remaining 1 (Application Gateway) is not implemented.
 
-The most significant gaps are:
+The most significant remaining gaps are:
 
-1. **AI critique per-incident table incomplete** — the general patterns section addresses the requirement's intent, but specific per-incident examples are marked as "to be completed".
-2. **No infrastructure tests** — a stretch goal that would strengthen confidence in resource correctness (FR-10.1 / NFR-6.1).
-3. **Application Gateway not deployed** — a stretch goal; APIM in internal VNet mode serves all core ingress requirements (FR-1.5).
-4. **README ACR cost estimate** lists Basic tier (~£4) but Terraform deploys Premium (~£40+) — the total cost is understated.
+1. **AI critique per-incident table incomplete** — the general patterns section addresses the requirement's intent, but specific per-incident examples are marked as "to be completed" (Gap 5).
+2. **Application Gateway not deployed** — a stretch goal; APIM in internal VNet mode serves all core ingress requirements (Gap 4 / FR-1.5).
+3. **README ACR cost estimate** lists Basic tier (~£4) but Terraform deploys Premium (~£40+) — the total cost is understated (Gap 6).
 
-Previously identified gaps for the App Insights web test (Gap 1) and incomplete diagnostic settings (Gap 2) have been resolved.
+Previously identified gaps that have been resolved:
+- **Gap 1:** App Insights standard web test (FR-7.1) — resolved.
+- **Gap 2:** Incomplete diagnostic settings (FR-5.5 / NFR-2.4) — resolved.
+- **Gap 3:** No infrastructure tests (FR-10.1 / NFR-6.1) — resolved. `terraform test` unit test files added for all four modules using mock providers; tests run in CI without Azure credentials.
