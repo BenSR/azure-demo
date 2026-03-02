@@ -56,6 +56,9 @@ module "workload_stamp" {
   # APIM MI needs KV access to retrieve mTLS certs in Phase 3.
   apim_principal_id = azurerm_api_management.this.identity[0].principal_id
 
+  # Admin user — Key Vault Secrets Officer for portal/CLI access.
+  admin_user_principal_name = var.admin_user_upn
+
   private_dns_zone_ids = {
     blob_storage_zone_id  = local.core.private_dns_zone_ids.blob_storage_zone_id
     file_storage_zone_id  = local.core.private_dns_zone_ids.file_storage_zone_id

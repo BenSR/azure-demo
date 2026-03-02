@@ -41,6 +41,13 @@ variable "stamps" {
   }
 }
 
+# ─── Admin user ──────────────────────────────────────────────────────────────
+
+variable "admin_user_upn" {
+  type        = string
+  description = "UPN of the Entra ID user to grant Key Vault Secrets Officer on each stamp's Key Vault (e.g. user@example.com)."
+}
+
 # ─── APIM ────────────────────────────────────────────────────────────────────
 
 variable "apim_publisher_name" {
