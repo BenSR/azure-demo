@@ -1,13 +1,28 @@
 import json
-import uuid
 import logging
+import os
+import uuid
 from datetime import datetime, timezone
 
 import azure.functions as func
+from azure.monitor.opentelemetry import configure_azure_monitor
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, field_validator
+
+# Configure Azure Monitor when running in Azure (not during unit tests).
+if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    configure_azure_monitor()
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 logger = logging.getLogger(__name__)
+
+
+# ─── Exceptions ───────────────────────────────────────────────────────────────
+
+
+class DeliberateServerError(RuntimeError):
+    """Raised intentionally to generate App Insights failure and exception telemetry."""
 
 
 # ─── Models ───────────────────────────────────────────────────────────────────
@@ -82,17 +97,20 @@ def message(req: func.HttpRequest) -> func.HttpResponse:
             request_id,
         )
 
-    # Deliberate 500 facility — allows alert-rule testing without a real failure.
+    # Deliberate 500 facility — raises a real exception so App Insights records
+    # a failure (success=false) and exception telemetry, while still returning
+    # a structured JSON response so callers see a consistent error envelope.
     if payload.trip_server_side_error:
-        logger.error(
-            "Deliberate server-side error triggered for request %s", request_id
-        )
-        return error_response(
-            500,
-            "DELIBERATE_ERROR",
-            "Server-side error deliberately triggered via trip_server_side_error flag.",
-            request_id,
-        )
+        try:
+            raise DeliberateServerError(
+                "Server-side error deliberately triggered via trip_server_side_error flag."
+            )
+        except DeliberateServerError as exc:
+            span = trace.get_current_span()
+            span.record_exception(exc)
+            span.set_status(StatusCode.ERROR, "DELIBERATE_ERROR")
+            logger.exception("Deliberate server-side error for request %s", request_id)
+            return error_response(500, "DELIBERATE_ERROR", str(exc), request_id)
 
     try:
         return func.HttpResponse(

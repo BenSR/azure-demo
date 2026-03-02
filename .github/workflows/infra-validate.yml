@@ -64,3 +64,23 @@ jobs:
         run: |
           terraform -chdir=terraform/phase3/env init -backend=false
           terraform -chdir=terraform/phase3/env validate
+
+      - name: "terraform test — modules/vnet"
+        run: |
+          terraform -chdir=terraform/modules/vnet init -backend=false
+          terraform -chdir=terraform/modules/vnet test
+
+      - name: "terraform test — modules/private-dns"
+        run: |
+          terraform -chdir=terraform/modules/private-dns init -backend=false
+          terraform -chdir=terraform/modules/private-dns test
+
+      - name: "terraform test — modules/workload-stamp-subnet"
+        run: |
+          terraform -chdir=terraform/modules/workload-stamp-subnet init -backend=false
+          terraform -chdir=terraform/modules/workload-stamp-subnet test
+
+      - name: "terraform test — modules/workload-stamp"
+        run: |
+          terraform -chdir=terraform/modules/workload-stamp init -backend=false
+          terraform -chdir=terraform/modules/workload-stamp test
