@@ -38,60 +38,63 @@ Infrastructure is organised into four resource group tiers, each with a distinct
 
 Environments (`dev`, `prod`) are managed via Terraform workspaces. Stamps are repeatable workload instances within an environment — APIM load-balances across them.
 
-### Architecture Diagram
-
-```mermaid
-graph TD
-    Bootstrap["rg-core-deploy<br/><i>Bootstrap</i>"]
-    Core["rg-core<br/><i>Core</i>"]
-    DevShared["rg-wkld-shared-dev<br/><i>Env-shared</i>"]
-    ProdShared["rg-wkld-shared-prod<br/><i>Env-shared</i>"]
-    DevStamp1["rg-wkld-stamp-1-dev<br/><i>Stamp</i>"]
-    DevStamp2["rg-wkld-stamp-2-dev<br/><i>Stamp</i>"]
-    ProdStamp1["rg-wkld-stamp-1-prod<br/><i>Stamp</i>"]
-
-    Core --> DevShared
-    Core --> ProdShared
-    DevShared --> DevStamp1
-    DevShared --> DevStamp2
-    ProdShared --> ProdStamp1
-```
-
-> **Bootstrap** holds Terraform state storage and the OIDC service principal. **Core** owns the shared VNet, Container Registry, Log Analytics, NAT Gateway, Private DNS zones, jump box, self-hosted runner, and Application Gateway. **Env-shared** contains one APIM instance per environment (dev/prod). Each **Stamp** is a repeatable workload unit: Function App, Storage Account, Key Vault, and Application Insights — all connected via Private Endpoints.
-
-### Network Diagram
+### Solution Topology
 
 ```mermaid
 graph LR
-    subgraph VNet["vnet-core"]
-        subgraph Fixed["Fixed subnets"]
-            apim[snet-apim]
-            shared_pe[snet-shared-pe]
-            runner[snet-runner]
-            jumpbox[snet-jumpbox]
+    AppGW["Application Gateway<br/><i>rg-core</i>"]
+
+    subgraph Dev["dev"]
+        DevAPIM["API Management<br/><i>rg-wkld-shared-dev</i>"]
+        subgraph DevStamp1["rg-wkld-stamp-1-dev"]
+            D1ASP["App Service Plan"]
+            D1Func["Function App"]
+            D1SA["Storage Account"]
+            D1KV["Key Vault"]
+            D1AI["App Insights"]
         end
-        subgraph AppGW["Application Gateway"]
-            appgw[snet-appgw]
-            appgw_pl[snet-appgw-pl]
-        end
-        subgraph Stamps["Per-stamp subnet pairs"]
-            stamp_pe["snet-stamp-{env}-{N}-pe"]
-            stamp_asp["snet-stamp-{env}-{N}-asp"]
+        subgraph DevStamp2["rg-wkld-stamp-2-dev"]
+            D2ASP["App Service Plan"]
+            D2Func["Function App"]
+            D2SA["Storage Account"]
+            D2KV["Key Vault"]
+            D2AI["App Insights"]
         end
     end
 
-    NAT["NAT Gateway"] --> runner
-    appgw -- "Private Link" --> appgw_pl
-    appgw -- "443" --> apim
-    apim -- "443" --> stamp_pe
-    stamp_asp -- "443" --> stamp_pe
-    stamp_asp -- "443" --> shared_pe
-    runner -- "443" --> shared_pe
-    jumpbox -- "443" --> apim
-    jumpbox -- "443" --> shared_pe
+    subgraph Prod["prod"]
+        ProdAPIM["API Management<br/><i>rg-wkld-shared-prod</i>"]
+        subgraph ProdStamp1["rg-wkld-stamp-1-prod"]
+            P1ASP["App Service Plan"]
+            P1Func["Function App"]
+            P1SA["Storage Account"]
+            P1KV["Key Vault"]
+            P1AI["App Insights"]
+        end
+    end
+
+    AppGW -- "/api/dev/*" --> DevAPIM
+    AppGW -- "/api/prod/*" --> ProdAPIM
+    DevAPIM --> D1Func
+    DevAPIM --> D2Func
+    ProdAPIM --> P1Func
+    D1Func --- D1ASP
+    D1Func --- D1SA
+    D1Func --- D1KV
+    D1Func --- D1AI
+    D2Func --- D2ASP
+    D2Func --- D2SA
+    D2Func --- D2KV
+    D2Func --- D2AI
+    P1Func --- P1ASP
+    P1Func --- P1SA
+    P1Func --- P1KV
+    P1Func --- P1AI
 ```
 
-> Single `/16` VNet with deterministic subnet allocation. Each stamp gets a PE + ASP subnet pair with dedicated NSGs. All PaaS services are accessible only via Private Endpoints in the PE subnets. The runner subnet egresses through the NAT Gateway; all other subnets have deny-all outbound to the internet.
+The Application Gateway (`rg-core`) is the single ingress point. It terminates mTLS and routes by URL path to the correct environment's APIM instance. Each APIM load-balances across its stamps — dev has two, prod has one. Every stamp is a self-contained resource group with its own compute, storage, secrets, and telemetry. The `rg-core` resource group also contains the shared VNet, Container Registry, Log Analytics Workspace, NAT Gateway, Private DNS zones, self-hosted runner, and jump box — all deployed once and consumed by every environment.
+
+All resources sit within a single `/16` VNet. Each stamp gets a dedicated subnet pair (Private Endpoint + App Service Plan) with per-subnet NSGs enforcing deny-all baselines. Only the self-hosted runner has internet egress (via NAT Gateway). All PaaS services are accessed exclusively through Private Endpoints.
 
 ### Request Flow
 
@@ -115,7 +118,11 @@ sequenceDiagram
     Func-->>Client: JSON response
 ```
 
-> Clients connect to `appgw.internal.contoso.com` via a Private Endpoint in `snet-shared-pe`. The Application Gateway terminates mTLS (validating the client certificate against the project CA), then routes by URL path (`/api/dev/*` or `/api/prod/*`) to the correct APIM instance. APIM acquires a Managed Identity token, load-balances across stamps, and forwards to the Function App's Private Endpoint. The Function App validates the token via Entra ID EasyAuth.
+> **mTLS termination and SSL re-encryption:** The Application Gateway terminates the client's TLS session and validates the client certificate against the project CA. It then establishes a *new* HTTPS connection to APIM, presenting the project CA as the trusted root for backend certificate verification. This SSL re-encryption is necessary because APIM uses a custom hostname (`apim-wkld-shared-{env}.internal.contoso.com`) with a CA-signed gateway certificate — the AppGW must verify this to maintain end-to-end trust. APIM in turn opens another HTTPS connection to the Function App Private Endpoint, attaching a Managed Identity bearer token. The Function App validates this token via Entra ID EasyAuth before processing the request.
+>
+> **Path-based routing:** The AppGW uses URL path rules (`/api/dev/*`, `/api/prod/*`) with rewrite rules that strip the environment prefix, so APIM receives clean `/api/message` or `/api/health` paths regardless of environment.
+>
+> **Health endpoint:** `GET /api/health` bypasses Managed Identity authentication at the APIM layer — the health-check operation policy intentionally omits the API-level inbound base policy, so no Entra token is acquired or forwarded. The AppGW health probes also bypass mTLS because they connect directly to APIM backends rather than traversing the HTTPS listener. However, an external client calling `/api/health` through the normal request path still needs a valid client certificate — mTLS is enforced at the listener for all paths. This separation allows the AppGW to detect stamp failures without credentials, while still protecting the health endpoint from unauthenticated external access.
 
 ---
 
