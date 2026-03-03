@@ -378,9 +378,9 @@ Monthly cost estimate for a single environment (dev, 2 stamps). Prices are appro
 | Storage Accounts (×2) | Standard_LRS | ~£2 |
 | Key Vaults (×3) | Standard | ~£0 (pay-per-operation) |
 | NAT Gateway + Public IPs (×3) | Standard | ~£30 + £10 |
-| Private Endpoints (×13) | — | ~£10 |
+| Private Endpoints (×13) | — | ~£100 (~£6 each per month) |
 | App Insights (×2) | — | ~£0 (included in LAW) |
-| **Total (1 env)** | | **~£350/month** |
+| **Total (1 env)** | | **~£450/month** |
 
 > **Cost-saving notes:**
 > - Stop VMs when not in use (`az vm deallocate`) — saves ~£54/month.
