@@ -38,6 +38,32 @@ resource "azurerm_nat_gateway_public_ip_association" "this" {
   public_ip_address_id = azurerm_public_ip.nat.id
 }
 
+# ─── NAT Gateway — Diagnostic Settings ──────────────────────────────────────
+
+resource "azurerm_monitor_diagnostic_setting" "nat" {
+  name                       = "diag-nat-${local.name_suffix}"
+  target_resource_id         = azurerm_nat_gateway.this.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
+
+  metric {
+    category = "AllMetrics"
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "nat_pip" {
+  name                       = "diag-pip-nat-${local.name_suffix}"
+  target_resource_id         = azurerm_public_ip.nat.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id
+
+  enabled_log {
+    category = "DDoSProtectionNotifications"
+  }
+
+  metric {
+    category = "AllMetrics"
+  }
+}
+
 # ─── Virtual Network ──────────────────────────────────────────────────────────
 # The address space is derived from the environment name (see main.tf locals).
 # Stamp subnets are defined explicitly via var.stamp_subnets.
