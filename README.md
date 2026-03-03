@@ -44,13 +44,17 @@ Environments (`dev`, `prod`) are managed via Terraform workspaces. Stamps are re
 graph TD
     Bootstrap["rg-core-deploy<br/><i>Bootstrap</i>"]
     Core["rg-core<br/><i>Core</i>"]
-    EnvShared["rg-wkld-shared-{env}<br/><i>Env-shared (×1 per env)</i>"]
-    Stamp["rg-wkld-stamp-{N}-{env}<br/><i>Stamp (×N per env)</i>"]
+    DevShared["rg-wkld-shared-dev<br/><i>Env-shared</i>"]
+    ProdShared["rg-wkld-shared-prod<br/><i>Env-shared</i>"]
+    DevStamp1["rg-wkld-stamp-1-dev<br/><i>Stamp</i>"]
+    DevStamp2["rg-wkld-stamp-2-dev<br/><i>Stamp</i>"]
+    ProdStamp1["rg-wkld-stamp-1-prod<br/><i>Stamp</i>"]
 
-    Bootstrap -- "Terraform state & OIDC" --> Core
-    Core -- "VNet, ACR, DNS, LAW" --> EnvShared
-    Core -- "App GW ingress" --> EnvShared
-    EnvShared -- "APIM routes to" --> Stamp
+    Core --> DevShared
+    Core --> ProdShared
+    DevShared --> DevStamp1
+    DevShared --> DevStamp2
+    ProdShared --> ProdStamp1
 ```
 
 > **Bootstrap** holds Terraform state storage and the OIDC service principal. **Core** owns the shared VNet, Container Registry, Log Analytics, NAT Gateway, Private DNS zones, jump box, self-hosted runner, and Application Gateway. **Env-shared** contains one APIM instance per environment (dev/prod). Each **Stamp** is a repeatable workload unit: Function App, Storage Account, Key Vault, and Application Insights — all connected via Private Endpoints.
