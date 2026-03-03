@@ -327,6 +327,46 @@ resource "azurerm_private_endpoint" "appgw" {
 # A record in the internal.contoso.com zone pointing to the PE NIC IP.
 # The zone is already linked to vnet-core so all subnets resolve this name.
 
+# ─── Diagnostic Settings ─────────────────────────────────────────────────────
+# Streams Application Gateway access/performance logs and Public IP DDoS
+# notifications to the shared Log Analytics Workspace.
+
+resource "azurerm_monitor_diagnostic_setting" "appgw" {
+  name                       = "diag-appgw-${local.name_suffix}"
+  target_resource_id         = azurerm_application_gateway.this.id
+  log_analytics_workspace_id = local.core.log_analytics_workspace_id
+
+  enabled_log {
+    category = "ApplicationGatewayAccessLog"
+  }
+
+  enabled_log {
+    category = "ApplicationGatewayPerformanceLog"
+  }
+
+  metric {
+    category = "AllMetrics"
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "appgw_pip" {
+  name                       = "diag-pip-appgw-${local.name_suffix}"
+  target_resource_id         = azurerm_public_ip.appgw.id
+  log_analytics_workspace_id = local.core.log_analytics_workspace_id
+
+  enabled_log {
+    category = "DDoSProtectionNotifications"
+  }
+
+  metric {
+    category = "AllMetrics"
+  }
+}
+
+# ─── DNS — appgw.internal.contoso.com ──────────────────────────────────────
+# A record in the internal.contoso.com zone pointing to the PE NIC IP.
+# The zone is already linked to vnet-core so all subnets resolve this name.
+
 resource "azurerm_private_dns_a_record" "appgw" {
   name                = "appgw"
   zone_name           = "internal.contoso.com"
